@@ -3,3 +3,5 @@
 reports
 .env
 src/resaro_agent/__pycache__
+
+src/data
