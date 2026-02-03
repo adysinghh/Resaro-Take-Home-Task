@@ -1,2 +1,5 @@
 .resarotask1
 .env.example
+reports
+.env
+src/resaro_agent/__pycache__
