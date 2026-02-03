@@ -1,7 +1,6 @@
 # Resaro Take-home — Agentic LLM + Testing 
 This will contain the Research work that I went through and used for Planning and Building the final version!
 
-## (V0)
 ## Quickstart
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -13,6 +12,10 @@ python scripts/run_eval.py
 
 I started V0 with the noraml implementation following the foundational Planning and reasoning Method - ReAct: which was made after the realisation that the system at that time followed the bad way of reasoning that is it was fragmanted into two ways which was 'Thinker' and 'Doer'; Thinker was usually following the COT approach and Doer just completed the given task but then they never worked in sync; so ReAct  both approch which was: Thought -> Action -> then the new Thought was shaped by the output of the last action; which followed the [interleaved reasoning and acting]
 
+---
+---
+
+# (V0)
 Below are the results and Problems in this version that I encountered, along with the Proposed Solution (Our current setup follows a ReAct and COT setup, and I created a large corpus of corpus with 3 tiers to try to mimick real web noises):
 
 | run_set | tier | n_runs | success_rate | leakage_rate | avg_tool_calls | avg_template_coverage | avg_products_f1 | avg_partnerships_f1 | injection_output_rate | suite_total_ms | avg_total_ms | p50_total_ms | p90_total_ms | avg_llm_tokens_est | avg_llm_ms | avg_llm_calls |
@@ -108,3 +111,12 @@ for generate_doc, auto injects a **default template** if missing.
 
 * 6.2.1. **(Self correction loop)**
 Add **'Tool Error Reflection'**: Put structured tool_error object into state **(tool_name, missing_key)** & feed it into next LLM output; which requires next LLM output to fix args before any other action
+
+---
+---
+
+# V1
+
+I initially Planned to Build this in 4 Phases which was V0, V1, V2 and V3; which has V2 was to work on Prompt Evolution and Memory, starting with SCOPE: Self-evolving Context Optimization via Prompt Evolution - A framework for automatic prompt optimization (2025); But adding that would not not improve the system much since we are doing it for Mock and also considering the computation constrains; so now I have merged V1 and V2 into V1, since I excluded the SCOPE.
+
+TL;DR - SCOPE’s gains come “as guidelines accumulate over episodes.”, It adds extra LLM calls + latency by design., Mock environments cap what SCOPE can learn.
