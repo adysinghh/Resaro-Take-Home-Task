@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "scripts" / "bootstrap.py"
 
 # ✅ hardcode your local paths here
-DEMO_VIDEO_PATH = Path("/ABS/PATH/TO/demo.mp4")
+DEMO_VIDEO_PATH = Path("Demovid.mp4")
 
 # optional
 DOC_VIDEO_PATH = Path("/ABS/PATH/TO/doc_video.mp4")   # optional
@@ -145,7 +145,7 @@ html, body, [class*="css"]  {
   border-radius: 18px;
   background: var(--card);
   border: 1px solid var(--stroke2);
-  padding: 14px 14px;
+  padding: 18px 18px;
   box-shadow: 0 8px 20px rgba(0,0,0,0.25);
 }
 
@@ -955,7 +955,7 @@ with right:
     st.markdown("### 🎥 Demo (Video)")
     st.caption("Hardcoded paths.")
 
-    vcol, scol = st.columns([0.52, 0.48], gap="medium")
+    vcol, scol = st.columns([0.72, 0.28], gap="medium")
 
     with vcol:
         if DEMO_VIDEO_PATH.exists():
