@@ -101,7 +101,7 @@ html, body, [class*="css"]  {
 }
 
 .block-container {
-  padding-top: 1.0rem;
+  padding-top: 5.0rem;
   padding-bottom: 2.0rem;
 }
 
