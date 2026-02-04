@@ -1,4 +1,5 @@
 ---
+---
 >I started V0 with the normal implementation following the foundational Planning and reasoning Method - ReAct: which was made after the realisation that the system at that time followed the bad way of reasoning that is it was fragmanted into two ways which was 'Thinker' and 'Doer'; Thinker was usually following the COT approach and Doer just completed the given task but then they never worked in sync; so ReAct  both approch which was: Thought -> Action -> then the new Thought was shaped by the output of the last action; which followed the [interleaved reasoning and acting]
 
 THIS CAN BE EXTENDED BY (for real time) -
