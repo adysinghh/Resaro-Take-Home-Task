@@ -5,9 +5,15 @@ python-dotenv
 requests
 pytest
 
-huggingface_hub
+huggingface-hub
 
 python-dotenv
 requests
 
 torch
+transformers
+accelerate
+safetensors
+
+pydantic
+streamlit
