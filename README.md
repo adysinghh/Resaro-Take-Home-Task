@@ -1,11 +1,10 @@
 # Resaro Take-home - Agentic LLM + Testing 
-This will contain the Research work that I went through and used for Planning and Building the final version!
 
 This contains (Doumentation Part):
 * writeup.md
 * metrics.md
 * test_plan.md
-* Research_Refernced (Paper PDFs, for each componenet)
+* Research_Refernced (contains the Research work that I went through and used for Planning and Building the final version!)
 
 ## Quickstart
 
