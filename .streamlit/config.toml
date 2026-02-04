@@ -1,0 +1,7 @@
+[theme]
+base="dark"
+primaryColor="#C8B273"               # gold accent
+backgroundColor="#07110E"            # deep green-black
+secondaryBackgroundColor="#0B1A16"   # card background
+textColor="#F4F1EA"                  # warm white
+font="sans serif"
