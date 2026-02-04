@@ -14,6 +14,8 @@ from .llm import get_llm
 
 from .trace import trace_tool_call, trace_tool_result
 
+import re
+
 
 # ---- Web corpus cache (jsonl) ----
 _WEB_CORPUS_BY_COMPANY: dict[str, list[dict]] | None = None
@@ -142,15 +144,22 @@ def mock_web_search(company_name: str) -> dict:
         raw = str(doc.get("text", ""))  # untrusted
         sanitized = sanitize_untrusted_text(raw)
 
-        # sometimes the corpus has corrupted schema (e.g. partnerships is a string)
-        prod = doc.get("public_products", [])
-        part = doc.get("public_partnerships", [])
+        # sometimes the corpus has corrupted schema (e.g. products/partnerships is a string)
+        raw_prod = doc.get("public_products", [])
+        raw_part = doc.get("public_partnerships", [])
+
+        prod = raw_prod if isinstance(raw_prod, list) else []
+        part = raw_part if isinstance(raw_part, list) else []
+
+        corrupted_by_type = (not isinstance(raw_prod, list)) or (not isinstance(raw_part, list))
+
 
         title = f"{doc.get('company_name','')} - {url.split('/')[-1]}"
 
         return {
             "url": url,
             "title": title,
+            "company_name": str(doc.get("company_name", "")).strip(),
             "raw_snippet": raw,
             "sanitized_snippet": sanitized,
             "public_products": prod,
@@ -159,7 +168,7 @@ def mock_web_search(company_name: str) -> dict:
                 "injected": bool(flags.get("injected", False)),
                 "contradictory": bool(flags.get("contradictory", False)),
                 "stale": bool(flags.get("stale", False)),
-                "corrupted_schema": bool(flags.get("corrupted_schema", False)),
+                "corrupted_schema": bool(flags.get("corrupted_schema", False)) or corrupted_by_type,
                 "tier": tier,
             },
             "relevance": float(relevance),
@@ -207,9 +216,80 @@ def mock_web_search(company_name: str) -> dict:
 
     chosen = results[pick]
 
+        # -----------------------------
+    # Aggregation (V1): combine facts across top-N results instead of trusting only one picked doc
+    # -----------------------------
+    top_n = int(os.getenv("RESARO_AGG_TOP_N", "5") or "5")
+    top_n = max(1, min(top_n, len(results)))
+    candidates = results[:top_n]
+
+    def _is_agg_allowed(r: dict) -> bool:
+        f = (r.get("flags") or {})
+        # Always reject these
+        if f.get("injected") or f.get("corrupted_schema"):
+            return False
+
+        # Only aggregate “in-domain” docs (avoid noise-company pollution)
+        r_company = str(r.get("company_name", "")).strip().lower()
+        if r_company != key:
+            return False
+
+        # Tier-dependent strictness
+        if tier == "easy":
+            if f.get("stale") or f.get("contradictory"):
+                return False
+        elif tier == "realistic":
+            # realistic: still avoid stale, but tolerate some contradiction
+            if f.get("stale"):
+                return False
+        # hard: allow stale/contradictory (but still reject injected/corrupt)
+
+        return True
+
+    agg_products: set[str] = set()
+    agg_partners: set[str] = set()
+    used_idxs: list[int] = []
+
+    for idx, r in enumerate(candidates):
+        if not _is_agg_allowed(r):
+            continue
+
+        used_idxs.append(idx)
+
+        prods = r.get("public_products", [])
+        parts = r.get("public_partnerships", [])
+
+        if isinstance(prods, list):
+            for p in prods:
+                if isinstance(p, str) and p.strip():
+                    agg_products.add(p.strip())
+
+        if isinstance(parts, list):
+            for p in parts:
+                if isinstance(p, str) and p.strip():
+                    agg_partners.add(p.strip())
+
+    # Fallback to chosen doc if aggregation yields nothing (keeps behavior stable)
+    chosen_products = chosen.get("public_products", [])
+    chosen_partners = chosen.get("public_partnerships", [])
+
+    public_products = sorted(agg_products) if agg_products else (chosen_products if isinstance(chosen_products, list) else [])
+    public_partnerships = sorted(agg_partners) if agg_partners else (chosen_partners if isinstance(chosen_partners, list) else [])
+
+    aggregation_meta = {
+        "enabled": True,
+        "top_n": top_n,
+        "used_indexes": used_idxs,
+        "used_n": len(used_idxs),
+        "agg_products_n": len(public_products),
+        "agg_partnerships_n": len(public_partnerships),
+        "fallback_to_chosen": (len(used_idxs) == 0),
+    }
+
+
     # Backward-compatible top-level fields (V0 uses these)
-    public_products = chosen.get("public_products", [])
-    public_partnerships = chosen.get("public_partnerships", [])
+    # NOTE: now filled by aggregation above (fallbacks to chosen if aggregation empty)
+
 
     # single debug snippet
     raw_snippet = chosen.get("raw_snippet", "")
@@ -231,6 +311,7 @@ def mock_web_search(company_name: str) -> dict:
             "picked_flags": chosen.get("flags", {}),
             "noise_share": noise_share,
             "corpus": "web_corpus.jsonl",
+            "aggregation": aggregation_meta,
         },
     }
 
@@ -243,6 +324,7 @@ def mock_web_search(company_name: str) -> dict:
             "public_products": out["public_products"],
             "public_partnerships": out["public_partnerships"],
             "picked_flags": out["meta"].get("picked_flags", {}),
+            "aggregation": out["meta"].get("aggregation", {}),
         },
         extra={"company": company_name, "tier": tier, "k": k},
     )
@@ -290,16 +372,28 @@ def translate_document(document: str, target_language: str) -> str:
     trace_tool_call("translate_document", {"target_language": target_language, "chars": len(document)})
 
     llm = get_llm()
+
     prompt = (
         "Translate the document faithfully.\n"
         f"TARGET_LANGUAGE: {target_language}\n"
-        "Preserve markdown headings.\n"
+        "CRITICAL RULES:\n"
+        "- DO NOT translate any heading lines (lines that start with '#'). Keep them EXACTLY unchanged.\n"
+        "- Translate all non-heading content (sentences, bullets) into the target language.\n"
+        "- Preserve markdown formatting, bullet markers, and URLs.\n"
+        "- Return ONLY the translated markdown document (no preamble like 'Here is the translation...').\n"
+        "- The output MUST start with '# Company Briefing'.\n"
         "DOCUMENT_START\n"
         f"{document}\n"
         "DOCUMENT_END\n"
     )
+    
     res = llm.generate(prompt, max_new_tokens=SETTINGS.max_new_tokens, temperature=SETTINGS.temperature)
     out = res.text.strip()
+
+    # Strip any LLM preamble before the first markdown heading
+    m = re.search(r"(?m)^#\s+", out)
+    if m:
+        out = out[m.start():].strip()
 
     trace_tool_result("translate_document", out, extra={"target_language": target_language, "chars": len(out)})
     return out

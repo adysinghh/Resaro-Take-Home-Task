@@ -30,10 +30,16 @@ def try_model(mid: str) -> bool:
 
 if __name__ == "__main__":
     assert HF_TOKEN, "HF_TOKEN (or HUGGINGFACEHUB_API_TOKEN) is missing."
+    found = False
+
     for mid in CANDIDATES:
         try:
             if try_model(mid):
                 print("\nWORKING_MODEL =", mid)
+                found = True
                 break
         except Exception as e:
             print(mid, "FAILED:", repr(e))
+    
+    if not found:
+        raise SystemExit(1)

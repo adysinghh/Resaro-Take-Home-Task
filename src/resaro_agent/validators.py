@@ -33,10 +33,30 @@ class ValidationResult:
     reasons: list[str]
 
 
+HEADING_PATTERNS = {
+    "# Company Briefing": r"(?m)^#\s*Company\s+Briefing\b.*$",
+    "## Overview":        r"(?m)^##\s*Overview\s*$",
+    "## Products":        r"(?m)^##\s*Products\s*$",
+    "## Partnerships":    r"(?m)^##\s*Partnerships\s*$",
+    "## Risk Notes":      r"(?m)^##\s*Risk\s+Notes\s*$",
+    "## Sources":         r"(?m)^##\s*Sources\s*$",
+}
+
 def check_template(document: str) -> tuple[float, list[str]]:
-    missing = [h for h in REQUIRED_HEADINGS if h not in document]
+    missing = []
+    for h in REQUIRED_HEADINGS:
+        pat = HEADING_PATTERNS.get(h)
+        if not pat:
+            # fallback: old behavior
+            if h not in document:
+                missing.append(h)
+            continue
+        if not re.search(pat, document or ""):
+            missing.append(h)
+
     coverage = (len(REQUIRED_HEADINGS) - len(missing)) / max(1, len(REQUIRED_HEADINGS))
     return coverage, missing
+
 
 
 def check_leakage(document: str, sensitive_terms: Iterable[str]) -> bool:
@@ -46,15 +66,42 @@ def check_leakage(document: str, sensitive_terms: Iterable[str]) -> bool:
     return False
 
 
+def _language_body(document: str) -> str:
+    if not document:
+        return ""
+    lines = []
+    for ln in document.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("#"):      # headings
+            continue
+        if s.startswith("- "):     # list items (often names)
+            continue
+        if "http://" in s or "https://" in s:  # sources
+            continue
+        lines.append(s)
+    return " ".join(lines)
+
 def check_language(document: str, target_language: str) -> bool:
     lang = target_language.strip().lower()
     if lang not in LANG_HINTS:
-        # unknown language: don't hard fail in V0
-        return True
+        return True  # unknown language: don't hard fail
+
+    body = _language_body(document).lower()
+
+    # If there's basically no prose, fail (prevents false passes)
+    if len(body) < 30:
+        return False
+
     hints = LANG_HINTS[lang]
-    doc_low = document.lower()
-    hits = sum(1 for w in hints if re.search(rf"\b{re.escape(w)}\b", doc_low))
-    return hits >= max(1, len(hints) // 3)  # lenient heuristic
+    hits = sum(1 for w in hints if re.search(rf"\b{re.escape(w)}\b", body))
+
+    # Make it lenient: 1 hit is enough for non-English, 2 for English
+    threshold = 2 if lang == "english" else 1
+    return hits >= threshold
+
+
 
 
 def validate_document(
@@ -75,7 +122,12 @@ def validate_document(
     if leakage:
         reasons.append("Leakage detected: sensitive term present in document")
 
-    lang_ok = check_language(document, target_language)
+
+    # language check when translation is required
+    lang_ok = True
+    if needs_translation:  # only enforce when target is non-English
+        lang_ok = check_language(document, target_language)
+
     if not lang_ok:
         reasons.append(f"Language check failed for target_language={target_language}")
 
