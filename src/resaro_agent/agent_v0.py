@@ -54,7 +54,7 @@ class GraphState(TypedDict, total=False):
     # ReAct loop control
     step_count: int
     max_steps: int
-    next_action: dict  # {"thought": str, "tool": str, "args": dict} OR {"thought": str, "final": true}
+    next_action: dict 
     scratchpad: list[dict]
     last_observation: str
 
@@ -439,7 +439,7 @@ JSON: {{"steps": ["...", "..."]}}
 
     plan = safe_json_loads(res.text) or {"steps": []}
 
-    # --- NEW: count plan usage into metrics ---
+    # --- count plan usage into metrics ---
     state.setdefault("metrics", {})
     state["metrics"]["llm_tokens_est"] = int(state["metrics"].get("llm_tokens_est", 0)) + int(getattr(res, "tokens_estimate", 0))
     state["metrics"]["llm_plan_calls"] = int(state["metrics"].get("llm_plan_calls", 0)) + 1

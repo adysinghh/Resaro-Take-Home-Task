@@ -95,7 +95,7 @@ def trace_llm(kind: str, prompt: str, completion: str, model: str, latency_ms: i
         prompt_hash=_short_hash(prompt),
         prompt_preview=_clip(prompt, 1200),
         completion_preview=_clip(completion, 1200),
-        completion_raw=completion,  # keep full by default; you can gate via env if you want
+        completion_raw=completion,  # keep full by default; can gate via env if you want
     )
 
 def trace_tool_call(tool: str, args: Dict[str, Any]):
