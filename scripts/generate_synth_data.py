@@ -84,6 +84,8 @@ def main():
     out_dir = Path("src/data")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    rng = random.Random(42)  # seed for reproducibility; remove seed if you want new every run
+
     TARGET_N = 1000  # or from argparse
 
     names = PINNED[:]  # keep canonical ones
@@ -98,9 +100,14 @@ def main():
         names.append(cand)
         seen.add(cand.strip().lower())
 
-    companies = [gen_company(n) for n in names]
+    companies = [gen_company(n, rng) for n in names]
     payload = {"companies": companies}
 
-    (out_dir / "company_db.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (out_dir / "company_db.json").write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8"
+    )
     print(f"Wrote {len(companies)} synthetic companies to src/data/company_db.json")
 
+if __name__ == "__main__":
+    main()
