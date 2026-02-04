@@ -22,7 +22,6 @@ BOOTSTRAP_SCRIPT = REPO_ROOT / "scripts" / "bootstrap.py"
 
 # ✅ hardcode your local paths here
 DEMO_VIDEO_PATH = Path("/ABS/PATH/TO/demo.mp4")
-DEMO_SLIDES_PDF_PATH = Path("/ABS/PATH/TO/slides.pdf")
 
 # optional
 DOC_VIDEO_PATH = Path("/ABS/PATH/TO/doc_video.mp4")   # optional
@@ -953,8 +952,8 @@ with right:
     # Demo assets (as you had)
     # -----------------------------
     st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.markdown("### 🎥 Demo Assets (Video + Slides)")
-    st.caption("Hardcoded paths — viewer-only.")
+    st.markdown("### 🎥 Demo (Video)")
+    st.caption("Hardcoded paths.")
 
     vcol, scol = st.columns([0.52, 0.48], gap="medium")
 
@@ -970,14 +969,6 @@ with right:
             st.video(DOC_VIDEO_PATH.read_bytes())
 
     with scol:
-        if DEMO_SLIDES_PDF_PATH.exists():
-            render_pdf_inline_from_path(DEMO_SLIDES_PDF_PATH, height=560)
-            with st.expander("If slides don’t show, use fallback viewer"):
-                st.caption("Renders slides as images (always works).")
-                if st.button("Render PDF as images", use_container_width=True, key="pdf_fallback"):
-                    render_pdf_as_images(DEMO_SLIDES_PDF_PATH, max_pages=25, zoom=1.6)
-        else:
-            st.warning(f"Slides PDF not found: {DEMO_SLIDES_PDF_PATH}")
 
         if DOC_DECK_PDF_PATH.exists():
             st.write("")
