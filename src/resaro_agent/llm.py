@@ -244,7 +244,7 @@ class HuggingFaceInferenceLLM(BaseLLM):
     """
     def __init__(self, token: str, model_id: str):
         from huggingface_hub import InferenceClient
-        self.token = token
+        self.tok = None
         self.model_id = model_id
         self.client = InferenceClient(
             model=self.model_id,
@@ -266,7 +266,9 @@ class HuggingFaceInferenceLLM(BaseLLM):
             prompt = prompt[-LOCAL_TRUNCATE_CHARS:]
 
         # If tokenizer supports chat templates, use them (better for instruct models)
-        if getattr(self.tok, "chat_template", None) and hasattr(self.tok, "apply_chat_template"):
+        tok = getattr(self, "tok", None)
+        if tok and getattr(tok, "chat_template", None) and hasattr(tok, "apply_chat_template"):
+
             messages = [{"role": "user", "content": prompt}]
             rendered = self.tok.apply_chat_template(
                 messages,

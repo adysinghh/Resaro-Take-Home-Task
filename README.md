@@ -13,6 +13,8 @@ This contains (Doumentation Part):
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r req.txt
+cp .env.example .env
+export RESARO_LLM_BACKEND=local
 streamlit run ui/app.py
 ```
 
@@ -22,6 +24,7 @@ streamlit run ui/app.py
 python -m venv .venv && source .venv/bin/activate
 pip install -r req.txt
 cp .env.example .env
+export RESARO_LLM_BACKEND=local
 python scripts/generate_synth_data.py
 python scripts/run_eval.py
 ```
