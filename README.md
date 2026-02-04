@@ -1,13 +1,18 @@
 # Resaro Take-home - Agentic LLM + Testing 
 This will contain the Research work that I went through and used for Planning and Building the final version!
 
+This contains (Doumentation Part):
+* writeup.md
+* metrics.md
+* test_plan.md
+* Research_Refernced (Paper PDFs, for each componenet)
+
 ## Quickstart
 
 >Easy setup, Do below steps and then UI has buttons for quick setup and validation:
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r req.txt
-pip install streamlit
 streamlit run ui/app.py
 ```
 
