@@ -8,32 +8,28 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
 
+import torch
 from dotenv import load_dotenv
-load_dotenv()
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from huggingface_hub import InferenceClient
+
 
 from .config import SETTINGS
+from .trace import trace_llm
 
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-import os, time, json, re
-from dataclasses import dataclass
-from typing import Optional, List, Dict
+load_dotenv()
 
 STRICT_LLM = os.getenv("RESARO_STRICT_LLM", "0") == "1"
 
 # LLM backend controls:
 #   local  -> always local transformers
 #   hf     -> always remote HF router/provider
-#   auto   -> try remote; if 402/payment -> local; else error (if strict)
-LLM_BACKEND = os.getenv("RESARO_LLM_BACKEND", "auto").strip().lower()
+#   auto   -> try remote if configured; else local
+LLM_BACKEND = os.getenv("RESARO_LLM_BACKEND", "local").strip().lower()
 
 HF_PROVIDER = os.getenv("RESARO_HF_PROVIDER", "hf-inference").strip()
 HF_MODEL_ID = os.getenv("RESARO_HF_MODEL_ID", "") or SETTINGS.hf_model_id
 HF_TOKEN = SETTINGS.hf_token
-
-STRICT_LLM = os.getenv("RESARO_STRICT_LLM", "0") == "1"
-LLM_BACKEND = os.getenv("RESARO_LLM_BACKEND", "").strip().lower()
 
 LOCAL_MODEL_ID = os.getenv("RESARO_LOCAL_MODEL_ID", "Qwen/Qwen2.5-0.5B-Instruct").strip()
 LOCAL_DEVICE = os.getenv("RESARO_LOCAL_DEVICE", "auto").strip().lower()  # auto|mps|cpu|cuda
@@ -113,36 +109,7 @@ class TracedLLM(BaseLLM):
         )
         return res
 
-
-@lru_cache(maxsize=2)
-def _load_local_model(model_id: str):
-
-    tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
-
-    # device selection
-    if LOCAL_DEVICE != "auto":
-        device = LOCAL_DEVICE
-    else:
-        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-            device = "mps"
-        elif torch.cuda.is_available():
-            device = "cuda"
-        else:
-            device = "cpu"
-
-    # dtype selection
-    if device in ("cuda", "mps"):
-        dtype = torch.float16
-    else:
-        dtype = torch.float32
-
-    model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype)
-    model.to(device)
-    model.eval()
-    return tok, model, device
-
-
-class LocalTransformersLLM:
+class LocalTransformersLLM(BaseLLM):
     _tokenizer = None
     _model = None
     _device = None
@@ -154,9 +121,6 @@ class LocalTransformersLLM:
     def _load_once(self):
         if LocalTransformersLLM._model is not None:
             return
-
-        import torch
-        from transformers import AutoTokenizer, AutoModelForCausalLM
 
         # device selection
         if torch.cuda.is_available():
@@ -192,7 +156,6 @@ class LocalTransformersLLM:
         LocalTransformersLLM._model = model
 
     def generate(self, prompt: str, *, max_new_tokens: int, temperature: float) -> LLMResult:
-        import torch
 
         t0 = time.time()
         prompt = _truncate_prompt(prompt, LOCAL_TRUNCATE_CHARS)
@@ -243,7 +206,6 @@ class HuggingFaceInferenceLLM(BaseLLM):
     Remote HF router/provider via huggingface_hub InferenceClient.
     """
     def __init__(self, token: str, model_id: str):
-        from huggingface_hub import InferenceClient
         self.tok = None
         self.model_id = model_id
         self.client = InferenceClient(
@@ -257,7 +219,6 @@ class HuggingFaceInferenceLLM(BaseLLM):
         return ("402" in msg) or ("payment required" in msg) or ("credit balance is depleted" in msg)
 
     def generate(self, prompt: str, *, max_new_tokens: int, temperature: float) -> LLMResult:
-        import torch
 
         t0 = time.time()
 
@@ -323,12 +284,8 @@ class HuggingFaceInferenceLLM(BaseLLM):
         return LLMResult(text=text, tokens_estimate=tokens_est, latency_ms=latency_ms)
 
 
-
-from .trace import get_trace  # optional, not required
-
 @lru_cache(maxsize=1)
 def get_llm() -> BaseLLM:
-    # decide backend exactly as you do now...
     if LLM_BACKEND == "local":
         base = LocalTransformersLLM(LOCAL_MODEL_ID)
         return TracedLLM(base, name=f"local:{LOCAL_MODEL_ID}")
@@ -337,7 +294,7 @@ def get_llm() -> BaseLLM:
         base = HuggingFaceInferenceLLM(token=HF_TOKEN, model_id=HF_MODEL_ID)
         return TracedLLM(base, name=f"hf:{HF_PROVIDER}:{HF_MODEL_ID}")
 
-    # auto...
+    # auto: keep your existing preference order
     if SETTINGS.llm_provider == "hf" and HF_TOKEN:
         base = HuggingFaceInferenceLLM(token=HF_TOKEN, model_id=HF_MODEL_ID)
         return TracedLLM(base, name=f"hf:{HF_PROVIDER}:{HF_MODEL_ID}")
@@ -345,9 +302,6 @@ def get_llm() -> BaseLLM:
     base = LocalTransformersLLM(LOCAL_MODEL_ID)
     return TracedLLM(base, name=f"local:{LOCAL_MODEL_ID}")
 
-
-
-import json
 
 def safe_json_loads(text: str) -> Optional[dict]:
     if not text:

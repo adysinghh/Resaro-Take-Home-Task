@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+import re
+import os
 import json
 import random
 from pathlib import Path
@@ -14,12 +17,22 @@ from .llm import get_llm
 
 from .trace import trace_tool_call, trace_tool_result
 
-import re
-
 
 # ---- Web corpus cache (jsonl) ----
 _WEB_CORPUS_BY_COMPANY: dict[str, list[dict]] | None = None
 _WEB_CORPUS_ALL: list[dict] | None = None
+
+# ---- HardSim defaults ----
+_DEFAULT_K_BY_TIER = {"easy": 4, "realistic": 8, "hard": 12}
+_NOISE_SHARE_BY_TIER = {"easy": 0.10, "realistic": 0.40, "hard": 0.60}
+
+# Pick logic (probability of trusting 2nd ranked doc)
+_PICK_SECOND_PROB = {"hard": 0.50, "realistic": 0.25}
+
+# Aggregation defaults
+_DEFAULT_AGG_TOP_N = 5
+_TRACE_SOURCES_N = 5
+
 
 
 def _load_web_corpus() -> tuple[dict[str, list[dict]], list[dict]]:
@@ -56,6 +69,147 @@ def _load_web_corpus() -> tuple[dict[str, list[dict]], list[dict]]:
     _WEB_CORPUS_ALL = all_docs
     return by_company, all_docs
 
+
+# Build result objects in the same shape your agent expects
+def _to_search_result(doc: dict, *, tier: str, relevance: float) -> dict:
+    url = str(doc.get("url", ""))
+    flags = doc.get("flags", {}) or {}
+    raw = str(doc.get("text", ""))  # untrusted
+    sanitized = sanitize_untrusted_text(raw)
+
+    # sometimes the corpus has corrupted schema (e.g. products/partnerships is a string)
+    raw_prod = doc.get("public_products", [])
+    raw_part = doc.get("public_partnerships", [])
+
+    prod = raw_prod if isinstance(raw_prod, list) else []
+    part = raw_part if isinstance(raw_part, list) else []
+
+    corrupted_by_type = (not isinstance(raw_prod, list)) or (not isinstance(raw_part, list))
+
+
+    title = f"{doc.get('company_name','')} - {url.split('/')[-1]}"
+
+    return {
+        "url": url,
+        "title": title,
+        "company_name": str(doc.get("company_name", "")).strip(),
+        "raw_snippet": raw,
+        "sanitized_snippet": sanitized,
+        "public_products": prod,
+        "public_partnerships": part,
+        "flags": {
+            "injected": bool(flags.get("injected", False)),
+            "contradictory": bool(flags.get("contradictory", False)),
+            "stale": bool(flags.get("stale", False)),
+            "corrupted_schema": bool(flags.get("corrupted_schema", False)) or corrupted_by_type,
+            "tier": tier,
+        },
+        "relevance": float(relevance),
+    }
+
+
+def _get_hardsim_params() -> tuple[str, int, float]:
+    tier = os.getenv("RESARO_HARDSIM_TIER", "easy").strip().lower()
+    k = int(os.getenv("RESARO_HARDSIM_K", "0") or "0")
+    if k <= 0:
+        k = _DEFAULT_K_BY_TIER.get(tier, 4)
+    noise_share = _NOISE_SHARE_BY_TIER.get(tier, 0.10)
+    return tier, k, noise_share
+
+def _sample_docs(rng: random.Random, in_docs: list[dict], other_docs: list[dict], *, k: int, noise_share: float) -> tuple[list[dict], list[dict]]:
+    n_noise = int(round(k * noise_share))
+    n_in = max(1, k - n_noise)
+
+    chosen_in = [rng.choice(in_docs) for _ in range(n_in)] if len(in_docs) < n_in else rng.sample(in_docs, n_in)
+    chosen_noise = [rng.choice(other_docs) for _ in range(n_noise)] if other_docs else []
+    return chosen_in, chosen_noise
+
+def _aggregate_facts(
+    *,
+    results: list[dict],
+    key: str,
+    tier: str,
+    top_n: int,
+    chosen: dict,
+) -> tuple[list[str], list[str], dict]:
+    """
+    Aggregate public_products/public_partnerships across top-N results, tier-aware.
+    Returns:
+      - public_products (list[str])
+      - public_partnerships (list[str])
+      - aggregation_meta (dict)  [same keys as before]
+    """
+    top_n = max(1, min(top_n, len(results)))
+    candidates = results[:top_n]
+
+    def _is_agg_allowed(r: dict) -> bool:
+        f = (r.get("flags") or {})
+
+        # Always reject these
+        if f.get("injected") or f.get("corrupted_schema"):
+            return False
+
+        # Only aggregate in-domain docs (avoid noise-company pollution)
+        r_company = str(r.get("company_name", "")).strip().lower()
+        if r_company != key:
+            return False
+
+        # Tier-dependent strictness
+        if tier == "easy":
+            if f.get("stale") or f.get("contradictory"):
+                return False
+        elif tier == "realistic":
+            if f.get("stale"):
+                return False
+        # hard: allow stale/contradictory (but still reject injected/corrupt)
+
+        return True
+
+    agg_products: set[str] = set()
+    agg_partners: set[str] = set()
+    used_idxs: list[int] = []
+
+    for idx, r in enumerate(candidates):
+        if not _is_agg_allowed(r):
+            continue
+
+        used_idxs.append(idx)
+
+        prods = r.get("public_products", [])
+        parts = r.get("public_partnerships", [])
+
+        if isinstance(prods, list):
+            for p in prods:
+                if isinstance(p, str) and p.strip():
+                    agg_products.add(p.strip())
+
+        if isinstance(parts, list):
+            for p in parts:
+                if isinstance(p, str) and p.strip():
+                    agg_partners.add(p.strip())
+
+    # Fallback to chosen doc if aggregation yields nothing (keeps behavior stable)
+    chosen_products = chosen.get("public_products", [])
+    chosen_partners = chosen.get("public_partnerships", [])
+
+    public_products = sorted(agg_products) if agg_products else (
+        chosen_products if isinstance(chosen_products, list) else []
+    )
+    public_partnerships = sorted(agg_partners) if agg_partners else (
+        chosen_partners if isinstance(chosen_partners, list) else []
+    )
+
+    aggregation_meta = {
+        "enabled": True,
+        "top_n": top_n,
+        "used_indexes": used_idxs,
+        "used_n": len(used_idxs),
+        "agg_products_n": len(public_products),
+        "agg_partnerships_n": len(public_partnerships),
+        "fallback_to_chosen": (len(used_idxs) == 0),
+    }
+
+    return public_products, public_partnerships, aggregation_meta
 
 
 class CompanyProfile(BaseModel):
@@ -104,17 +258,11 @@ def mock_web_search(company_name: str) -> dict:
       - RESARO_HARDSIM_TIER = easy | realistic | hard   (default: easy)
       - RESARO_HARDSIM_K = int (default depends on tier)
     """
-    import os
-
+    
     trace_tool_call("mock_web_search", {"company_name": company_name})
-
-    tier = os.getenv("RESARO_HARDSIM_TIER", "easy").strip().lower()
-    k = int(os.getenv("RESARO_HARDSIM_K", "0") or "0")
-    if k <= 0:
-        k = {"easy": 4, "realistic": 8, "hard": 12}.get(tier, 4)
-
-    # How much noise to mix in (results from OTHER companies)
-    noise_share = {"easy": 0.10, "realistic": 0.40, "hard": 0.60}.get(tier, 0.10)
+    
+    # ---- Params & corpus load ----
+    tier, k, noise_share = _get_hardsim_params()
 
     by_company, all_docs = _load_web_corpus()
     key = company_name.strip().lower()
@@ -123,8 +271,10 @@ def mock_web_search(company_name: str) -> dict:
         raise ValueError(f"Company not found in web corpus: {company_name}")
 
     # deterministic RNG => stable evals
+    # ---- Deterministic RNG (stable evals) ----
     rng = random.Random(f"{company_name}:{tier}:corpus:v0")
 
+    # ---- Sample in-domain + noise docs ----
     # choose how many “in-domain” docs vs noise docs
     n_noise = int(round(k * noise_share))
     n_in = max(1, k - n_noise)
@@ -137,61 +287,26 @@ def mock_web_search(company_name: str) -> dict:
     other_docs = [d for d in all_docs if str(d.get("company_name", "")).strip().lower() != key]
     chosen_noise = [rng.choice(other_docs) for _ in range(n_noise)] if other_docs else []
 
-    # Build result objects in the same shape your agent expects
-    def to_result(doc: dict, relevance: float) -> dict:
-        url = str(doc.get("url", ""))
-        flags = doc.get("flags", {}) or {}
-        raw = str(doc.get("text", ""))  # untrusted
-        sanitized = sanitize_untrusted_text(raw)
-
-        # sometimes the corpus has corrupted schema (e.g. products/partnerships is a string)
-        raw_prod = doc.get("public_products", [])
-        raw_part = doc.get("public_partnerships", [])
-
-        prod = raw_prod if isinstance(raw_prod, list) else []
-        part = raw_part if isinstance(raw_part, list) else []
-
-        corrupted_by_type = (not isinstance(raw_prod, list)) or (not isinstance(raw_part, list))
-
-
-        title = f"{doc.get('company_name','')} - {url.split('/')[-1]}"
-
-        return {
-            "url": url,
-            "title": title,
-            "company_name": str(doc.get("company_name", "")).strip(),
-            "raw_snippet": raw,
-            "sanitized_snippet": sanitized,
-            "public_products": prod,
-            "public_partnerships": part,
-            "flags": {
-                "injected": bool(flags.get("injected", False)),
-                "contradictory": bool(flags.get("contradictory", False)),
-                "stale": bool(flags.get("stale", False)),
-                "corrupted_schema": bool(flags.get("corrupted_schema", False)) or corrupted_by_type,
-                "tier": tier,
-            },
-            "relevance": float(relevance),
-        }
-
     # Assign imperfect relevance (simulate a flawed ranker)
+    # ---- Build ranked results (imperfect ranker simulation) ----
     results: list[dict] = []
 
     # in-domain docs start higher
     for i, d in enumerate(chosen_in):
         base = 1.0 - (i * 0.03)
         jitter = rng.uniform(-0.06, 0.06)
-        results.append(to_result(d, relevance=base + jitter))
+        results.append(_to_search_result(d, tier=tier, relevance=base + jitter))
 
     # noise docs lower relevance
     for j, d in enumerate(chosen_noise):
         base = 0.20 - (j * 0.01)
         jitter = rng.uniform(-0.05, 0.05)
-        results.append(to_result(d, relevance=base + jitter))
+        results.append(_to_search_result(d, tier=tier, relevance=base + jitter))
 
     # sort by relevance descending
     results.sort(key=lambda r: float(r.get("relevance", 0.0)), reverse=True)
 
+    # ---- Pick one doc that V0 might trust (tier-dependent) ----
     # Pick a “selected” result that V0 will trust (sometimes wrong in realistic/hard)
     pick = 0
 
@@ -216,75 +331,19 @@ def mock_web_search(company_name: str) -> dict:
 
     chosen = results[pick]
 
-        # -----------------------------
+    # -----------------------------
     # Aggregation (V1): combine facts across top-N results instead of trusting only one picked doc
     # -----------------------------
+
+    # ---- Aggregate facts across top-N (V1 behavior) ----
     top_n = int(os.getenv("RESARO_AGG_TOP_N", "5") or "5")
-    top_n = max(1, min(top_n, len(results)))
-    candidates = results[:top_n]
-
-    def _is_agg_allowed(r: dict) -> bool:
-        f = (r.get("flags") or {})
-        # Always reject these
-        if f.get("injected") or f.get("corrupted_schema"):
-            return False
-
-        # Only aggregate “in-domain” docs (avoid noise-company pollution)
-        r_company = str(r.get("company_name", "")).strip().lower()
-        if r_company != key:
-            return False
-
-        # Tier-dependent strictness
-        if tier == "easy":
-            if f.get("stale") or f.get("contradictory"):
-                return False
-        elif tier == "realistic":
-            # realistic: still avoid stale, but tolerate some contradiction
-            if f.get("stale"):
-                return False
-        # hard: allow stale/contradictory (but still reject injected/corrupt)
-
-        return True
-
-    agg_products: set[str] = set()
-    agg_partners: set[str] = set()
-    used_idxs: list[int] = []
-
-    for idx, r in enumerate(candidates):
-        if not _is_agg_allowed(r):
-            continue
-
-        used_idxs.append(idx)
-
-        prods = r.get("public_products", [])
-        parts = r.get("public_partnerships", [])
-
-        if isinstance(prods, list):
-            for p in prods:
-                if isinstance(p, str) and p.strip():
-                    agg_products.add(p.strip())
-
-        if isinstance(parts, list):
-            for p in parts:
-                if isinstance(p, str) and p.strip():
-                    agg_partners.add(p.strip())
-
-    # Fallback to chosen doc if aggregation yields nothing (keeps behavior stable)
-    chosen_products = chosen.get("public_products", [])
-    chosen_partners = chosen.get("public_partnerships", [])
-
-    public_products = sorted(agg_products) if agg_products else (chosen_products if isinstance(chosen_products, list) else [])
-    public_partnerships = sorted(agg_partners) if agg_partners else (chosen_partners if isinstance(chosen_partners, list) else [])
-
-    aggregation_meta = {
-        "enabled": True,
-        "top_n": top_n,
-        "used_indexes": used_idxs,
-        "used_n": len(used_idxs),
-        "agg_products_n": len(public_products),
-        "agg_partnerships_n": len(public_partnerships),
-        "fallback_to_chosen": (len(used_idxs) == 0),
-    }
+    public_products, public_partnerships, aggregation_meta = _aggregate_facts(
+        results=results,
+        key=key,
+        tier=tier,
+        top_n=top_n,
+        chosen=chosen,
+    )
 
 
     # Backward-compatible top-level fields (V0 uses these)
@@ -297,6 +356,7 @@ def mock_web_search(company_name: str) -> dict:
 
     sources = [r["url"] for r in results[: min(len(results), 5)]]
 
+    # ---- Assemble output (backward-compatible schema) ----
     out = {
         "public_products": public_products if isinstance(public_products, list) else [],
         "public_partnerships": public_partnerships if isinstance(public_partnerships, list) else [],
@@ -316,6 +376,7 @@ def mock_web_search(company_name: str) -> dict:
     }
 
     # Trace a SMALL summary only (don’t dump all 30k chars / results)
+    # ---- Trace summary (avoid dumping full results) ----
     trace_tool_result(
         "mock_web_search",
         {

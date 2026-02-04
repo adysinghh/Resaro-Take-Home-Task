@@ -14,6 +14,10 @@ INJECTION_PATTERNS = [
     r"(?i)\breveal\b.*\bsecret\b",
 ]
 
+_COMPILED_INJECTION_PATTERNS = [re.compile(p) for p in INJECTION_PATTERNS]
+_COMPILED_ROLE_LINE = re.compile(r"(?i)^\s*(system|developer|assistant|user)\s*:")
+_COMPILED_IGNORE_LINE = re.compile(r"(?i)ignore (all|previous) instructions")
+
 @dataclass
 class SecurityReport:
     redacted_terms: list[str]
@@ -27,10 +31,10 @@ def sanitize_untrusted_text(text: str) -> str:
     lines = text.splitlines()
     cleaned: list[str] = []
     for ln in lines:
-        if re.search(r"(?i)^\s*(system|developer|assistant|user)\s*:", ln):
+        if _COMPILED_ROLE_LINE.search(ln):
             cleaned.append("[REDACTED_INJECTION_LINE]")
             continue
-        if re.search(r"(?i)ignore (all|previous) instructions", ln):
+        if _COMPILED_IGNORE_LINE.search(ln):
             cleaned.append("[REDACTED_INJECTION_LINE]")
             continue
         cleaned.append(ln)
@@ -53,9 +57,9 @@ def security_filter(document: str, *, sensitive_terms: Iterable[str]) -> tuple[s
             out = re.sub(re.escape(term), "[REDACTED]", out, flags=re.IGNORECASE)
 
     injection_stripped = False
-    for pat in INJECTION_PATTERNS:
-        if re.search(pat, out):
+    for cre in _COMPILED_INJECTION_PATTERNS:
+        if cre.search(out):
             injection_stripped = True
-            out = re.sub(pat, "[REDACTED_INJECTION]", out)
-
+            out = cre.sub("[REDACTED_INJECTION]", out)
+    
     return out, SecurityReport(redacted_terms=redacted_terms, injection_stripped=injection_stripped)

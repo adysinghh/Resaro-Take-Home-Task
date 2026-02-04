@@ -832,7 +832,8 @@ def react_dispatch(state: GraphState) -> GraphState:
         _log_tool(state, "translate_document", {"target_language": tgt}, out, ok, latency)
 
         state["working_doc"] = doc
-        state["did_translate"] = True
+        # state["did_translate"] = True
+        state["did_translate"] = bool(ok)
 
 
 
@@ -927,10 +928,16 @@ def minimal_repair(state: GraphState) -> GraphState:
     # If language check failed & translation required: re-translate once (best-effort)
     if (not v.get("language_ok", True)) and (state.get("target_language", "").strip().lower() not in ["english", "en"]):
         t0 = _now_ms()
-        retr = translate_document.invoke({"document": repaired, "target_language": state["target_language"]})
+        repaired = _translate_preserve_headings(doc=repaired, target_language=state["target_language"])
         latency = _now_ms() - t0
-        _log_tool(state, "translate_document", {"target_language": state["target_language"], "retry": True}, retr, True, latency)
-        rrepaired = _translate_preserve_headings(doc=repaired, target_language=state["target_language"])
+        _log_tool(
+            state,
+            "translate_document",
+            {"target_language": state["target_language"], "retry": True},
+            repaired,
+            True,
+            latency,
+        )
 
     return {"working_doc": repaired}
 
@@ -968,10 +975,10 @@ def security_node(state: GraphState) -> GraphState:
     if tr:
         tr.add(
             "security_summary",
-            redactions_count=int(getattr(report, "redactions_count", 0) or 0),
-            leakage_found=bool(getattr(report, "leakage_found", False)),
+            redacted_terms_n=len(getattr(report, "redacted_terms", []) or []),
+            injection_stripped=bool(getattr(report, "injection_stripped", False)),
         )
-
+    
     return {"final": filtered, "security_report": report.__dict__}
 
 

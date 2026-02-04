@@ -1,24 +1,18 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from pathlib import Path
-
-from .agent_v0 import run_agent
-from .redteam_cases import REDTEAM_PROMPTS
-
-import re
-import json
-from pathlib import Path
-from typing import List, Set, Tuple
-
-from .config import SETTINGS
-
 import os
 import random
-
+import re
 import time
+from dataclasses import dataclass
+from pathlib import Path
 from statistics import median
+from typing import List, Set
+
+from .agent_v0 import run_agent
+from .config import SETTINGS
+from .redteam_cases import REDTEAM_PROMPTS
 
 def _make_tasks_from_db(n_tasks: int = 50) -> list[str]:
     db = _load_db()
@@ -98,14 +92,39 @@ class EvalRow:
     tool_calls: int
     total_ms: int
 
+def _p90(xs: List[int]) -> int:
+    if not xs:
+        return 0
+    xs2 = sorted(xs)
+    return xs2[int(0.9 * (len(xs2) - 1))]
+
+def _accumulate_perf_metrics(
+    m: dict,
+    *,
+    total_ms_list: List[int],
+    llm_tokens_list: List[int],
+    llm_ms_list: List[int],
+    llm_calls_list: List[int],
+) -> None:
+    total_ms_list.append(int(m.get("total_ms", 0)))
+    llm_tokens_list.append(int(m.get("llm_tokens_est", 0)))
+
+    llm_total_ms = int(m.get("llm_decide_ms", 0)) + int(m.get("llm_plan_ms", 0))
+    llm_ms_list.append(llm_total_ms)
+
+    llm_total_calls = int(m.get("llm_decide_calls", 0)) + int(m.get("llm_plan_calls", 0))
+    llm_calls_list.append(llm_total_calls)
+
+def _write_run_artifacts(out_dir: str, *, prefix: str, idx_1based: int, receipt: dict, final_doc: str) -> None:
+    Path(out_dir, f"{prefix}_{idx_1based}.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+    Path(out_dir, f"{prefix}_{idx_1based}_final.md").write_text(final_doc, encoding="utf-8")
+
 
 def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
     t_suite0 = time.time()
     Path(out_dir).mkdir(parents=True, exist_ok=True)
 
-    db = _load_db()
-    names = [c["name"] for c in db["companies"][:3]]
-
+    # ---- Build task list ----
     n_tasks = int(os.getenv("RESARO_EVAL_N_TASKS", "50"))
     tasks = _make_tasks_from_db(n_tasks=n_tasks)
 
@@ -124,20 +143,21 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
     llm_ms_list = []
     llm_calls_list = []
 
+    # ---- Run standard tasks ----
     for idx, instr in enumerate(tasks):
         out = run_agent(instr)
         
         receipt = out["run_receipt"]
         m = receipt.get("metrics", {})
 
-        total_ms_list.append(int(m.get("total_ms", 0)))
-        llm_tokens_list.append(int(m.get("llm_tokens_est", 0)))
 
-        llm_total_ms = int(m.get("llm_decide_ms", 0)) + int(m.get("llm_plan_ms", 0))
-        llm_ms_list.append(llm_total_ms)
-
-        llm_total_calls = int(m.get("llm_decide_calls", 0)) + int(m.get("llm_plan_calls", 0))
-        llm_calls_list.append(llm_total_calls)
+        _accumulate_perf_metrics(
+            m,
+            total_ms_list=total_ms_list,
+            llm_tokens_list=llm_tokens_list,
+            llm_ms_list=llm_ms_list,
+            llm_calls_list=llm_calls_list,
+        )
 
         # --- compute accuracy metrics using ground truth ---
         company = out.get("company_name") or out.get("company") or out.get("run_receipt", {}).get("company")
@@ -167,8 +187,7 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
 
         receipts.append(receipt)
 
-        Path(out_dir, f"task_{idx+1}.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
-        Path(out_dir, f"task_{idx+1}_final.md").write_text(final_doc, encoding="utf-8")
+        _write_run_artifacts(out_dir, prefix="task", idx_1based=idx + 1, receipt=receipt, final_doc=final_doc)
 
         m = receipt["metrics"]
         rows.append(EvalRow(
@@ -180,22 +199,23 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
             total_ms=int(m.get("total_ms", 0)),
         ))
 
+    
     # red-team subset
+    # ---- Run red-team prompts ----
     for j, instr in enumerate(REDTEAM_PROMPTS[:max_redteam]):
         out = run_agent(instr)
         receipt = out["run_receipt"]
 
         m = receipt.get("metrics", {})
 
-        total_ms_list.append(int(m.get("total_ms", 0)))
-        llm_tokens_list.append(int(m.get("llm_tokens_est", 0)))
-
-        llm_total_ms = int(m.get("llm_decide_ms", 0)) + int(m.get("llm_plan_ms", 0))
-        llm_ms_list.append(llm_total_ms)
-
-        llm_total_calls = int(m.get("llm_decide_calls", 0)) + int(m.get("llm_plan_calls", 0))
-        llm_calls_list.append(llm_total_calls)
-
+        _accumulate_perf_metrics(
+            m,
+            total_ms_list=total_ms_list,
+            llm_tokens_list=llm_tokens_list,
+            llm_ms_list=llm_ms_list,
+            llm_calls_list=llm_calls_list,
+        )
+        
         final_doc = out.get("final", "") or ""
         inj_flags.append(bool(_contains_injection_markers(final_doc)))
 
@@ -204,8 +224,8 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
         receipt["metrics"]["injection_in_output"] = bool(_contains_injection_markers(final_doc))
 
         receipts.append(receipt)
-        Path(out_dir, f"redteam_{j+1}.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
-        Path(out_dir, f"redteam_{j+1}_final.md").write_text(final_doc, encoding="utf-8")
+
+        _write_run_artifacts(out_dir, prefix="redteam", idx_1based=j + 1, receipt=receipt, final_doc=final_doc)
 
         m = receipt["metrics"]
         rows.append(EvalRow(
@@ -228,14 +248,9 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
     avg_partnerships_f1 = sum(f1_partners) / max(1, len(f1_partners))
     injection_output_rate = sum(1 for b in inj_flags if b) / max(1, len(inj_flags))
 
-   
-    def _p90(xs):
-        if not xs: return 0
-        xs2 = sorted(xs)
-        return xs2[int(0.9 * (len(xs2) - 1))]
-
     suite_total_ms = int((time.time() - t_suite0) * 1000)
 
+    # ---- Aggregate suite metrics ----
     summary = {
         "n_runs": n,
         "success_rate": success_rate,
