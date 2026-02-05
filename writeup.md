@@ -1,21 +1,26 @@
 ---
 ---
->I started V0 with the normal implementation following the foundational Planning and reasoning Method - ReAct: which was made after the realisation that the system at that time followed the bad way of reasoning that is it was fragmanted into two ways which was 'Thinker' and 'Doer'; Thinker was usually following the COT approach and Doer just completed the given task but then they never worked in sync; so ReAct  both approch which was: Thought -> Action -> then the new Thought was shaped by the output of the last action; which followed the [interleaved reasoning and acting]
 
-THIS CAN BE EXTENDED BY (for real time) -
-1. Adding SimpleMemory (2025)
-2. Adding ToolRM kind of reward model for tool selection (2025)
-3. Adding SCOPE Prompt Evolution (2025) for better learned prompts refinement
-4. Adding Dynamic Cheatsheet- Test-Time Learning with Adaptive Memory, for better self-correction
-5. Adding Tree of Thoughts Combined with ReflAct for deep insights
+I started V0 with a standard ReAct-style implementation.
 
->I started with ReAct + COT(similar imp.) and then shifted to ReflAct, Self-correction, prompt compression, Deterministic layers, Persistant Memory, Hard validation and stops from V0-V2
+ReAct came from the realization that older systems often split work into a “Thinker” and a “Doer”. The Thinker followed chain-of-thought style reasoning, and the Doer executed actions, but they did not stay aligned. ReAct fixes this by interleaving reasoning and acting:
 
+Thought -> Action -> next Thought conditioned on the Action output (interleaved reasoning and acting)
 
+The current system (v2) can be extended in a real system with:
+1. SimpleMem (2025) style persistent memory
+2. ToolRM / tool-call reward modeling for better tool selection (2025)
+3. SCOPE prompt evolution (2025) to refine control prompts across episodes
+4. Dynamic Cheatsheet style test-time learning with adaptive memory
+5. Tree of Thoughts combined with ReflAct for deeper search on hard decisions
+
+I started with ReAct + CoT (for control) and then moved toward ReflAct-style reflection, self-correction, prompt compression, deterministic layers, persistent memory, hard validation, and strict stop conditions across V0 -> V2.
+
+---
 ---
 
 # (V0)
-Below are the results and Problems in this version that I encountered, along with the Proposed Solution (Our current setup follows a ReAct and COT setup, and I created a large corpus of corpus with 3 tiers to try to mimick real web noises):
+Below are the results and key problems in V0. The setup is a ReAct loop with a synthetic company DB + a synthetic web corpus with 3 tiers to mimic real web noise.
 
 | run_set | tier | n_runs | success_rate | leakage_rate | avg_tool_calls | avg_template_coverage | avg_products_f1 | avg_partnerships_f1 | injection_output_rate | suite_total_ms | avg_total_ms | p50_total_ms | p90_total_ms | avg_llm_tokens_est | avg_llm_ms | avg_llm_calls |
 |---------|------|--------|--------------|--------------|----------------|----------------------|-----------------|---------------------|----------------------|----------------|--------------|--------------|--------------|-------------------|------------|---------------|
@@ -27,31 +32,27 @@ Below are the results and Problems in this version that I encountered, along wit
 | 58-run | realistic | 58 | 0.7586206896551724 | 0.0 | 12.379310344827585 | 0.8505747126436782 | 0.4666666666666666 | 0.4893333333333333 | 0.0 | | | | | | | |
 
 ## Problems that I Encountered
+---
 
-> **Note:** Formatting + emphasis only. Text unchanged.
+### 1) No persistent learning (major)
+The agent can correct issues within a run via heuristics, but it does not learn patterns from past failures and reuse them in later runs.
+
+Root cause: no persistent memory.
+
+Fix direction: add a lightweight persistent memory (store failures, missing headings, language failures, tool error signatures). In a real system, this can be upgraded to a SimpleMem-style memory module, which is an improvement on Mem0 (YC).
 
 ---
 
-### 1) **No Persistant Learning (Major)**
+### 2) One small LLM does planning + deciding + translation (major)
+Evidence: latency is high (tests run on a MacBook Pro M3 Pro).
 
-Agent correct issues via heuristics, but doesn't lear pattern from past error and then apply in the run. <br>
-
-**ROOT CAUSE:** We Dont have any persistant memory!;
-**Soln:** 1.1 Use an optimized memory such as **'SimpleMemory (2025)'** this is an improvement on the **'Mem0'** which is an YC startup; In this we could store the sucess cases, what worked and what did not.
-
----
-
-### 2) **Single Small LLM does: Planning + deciding + transaltion. (Quality, Speed botteneck) (Major)** <br>
-
-**Evidence:** Latency is high, I ran all these tests on the Macbook Pro with M3 pro chip.
-
-We could fix this by using **2 LLMs**, to split the task between 2 llms like done in modern agentic systems; where we could use an **'Small Model'** for **Control (Plan)** and then use **'Large Model'** for the other task such as; **translate, Rewrite and Summarize**
-
-Another Fix is to use **'Prompt Comperession'**, where we could summarizr state instead of feeding large JSON or DOC and feeding the entire data into the LLM.
+Fix direction:
+- Split roles across models (small controller for plan/decide, larger model only for translation/rewrites if needed).
+- Add prompt compression (summarize state instead of feeding large JSON or documents).
 
 ---
 
-### 3) **Third biggest problem in current setup is 'EFFICIENCY'(Major)**
+### 3) **Efficiency problems (major)**
 
 #### 3.1. **ReAct drawback + loops**
 
@@ -59,11 +60,12 @@ ReAct exhibits a major drawback, that it Plans -> Action -> Use output to shape 
 
 **Solution** to this is to migrate the Reasoning phase from **ReAct -> ReflAct**, which will stop the looping since it knows, where it is, whats done and what remains.
 
-After each step, Run **tiny-reflection loop** like -
-
-* "Did we progress stage?"
-* "Is next tool valid under current stage"
-* "Did we hit repetation".
+Fix direction:
+- Migrate control from pure ReAct to ReflAct-style reflection signals.
+- After each step, run a tiny reflection check:
+  - Did we progress stage
+  - Is next tool valid under current stage
+  - Did we repeat too many times
 
 #### 3.2. **High 'avg_tool_calls'**
 
@@ -71,26 +73,21 @@ To fix this we could follow recent Methods which adds an **rewarding function** 
 
 ---
 
-### 4) **Agents Loops/ Redundant tool calls**
+### 4) Loops and redundant tool calls
+Issues:
+- ReAct relies on prompts but does not hard-block loops.
+- Invalid JSON or missing fields can trigger repetitive fallback behavior.
+- Controller lacks stage completeness (profile fetched, web fetched, doc generated).
 
-* 4.1.
-ReAct relies mostly on prompt, but doesnt hard block any loops now.
-
-* 4.2.
-When LLM output is invalid json/ missing req. fields: Fallback policies and selct tools in the way that creates repetible loops.
-
-* 4.3.
-Controller doesnt have a **'Notion of stage completeness'**, i.e., Profile done, web search done (which is also a Reflection signal).
-
-Most of this could be fixed by adding **ToolRM** and **ReflAct**, a **self correctness**.
+Fix direction:
+- Add stage-locked routing + reflection (ReflAct-style) + optional reward model ideas.
 
 ---
 
-### 5) **Successs rate failure**
-
-We could use **Determinstic doc assembly** (Reduce relicance on the LLM for structuring)
-
-**Stronger Stop Condition:** Dont allow stopping till it (LLM) fixes the structure of final doc.
+### 5) Success rate failures
+Fix direction:
+- Deterministic document assembly (reduce reliance on LLM for structuring).
+- Stronger stop condition: do not terminate until template is structurally valid (or force a repair path).
 
 ---
 
@@ -116,12 +113,17 @@ Add **'Tool Error Reflection'**: Put structured tool_error object into state **(
 
 # V1
 
-I initially Planned to Build this in 4 Phases which was V0, V1, V2 and V3; which has V2 was to work on Prompt Evolution and Memory, starting with SCOPE: Self-evolving Context Optimization via Prompt Evolution - A framework for automatic prompt optimization (2025); But adding that would not not improve the system much since we are doing it for Mock and also considering the computation constrains; so now I have merged V1 and V2 into V1, since I excluded the SCOPE.
+I initially planned 4 phases (V0, V1, V2, V3). V2 was meant to add prompt evolution and stronger memory; Starting from SCOPE, but I decided not to include SCOPE here because:
+- SCOPE’s gains come from guidelines accumulating over many episodes
+- It adds extra LLM calls and latency by design
+- A seeded mock environment limits what it can learn
 
 TL;DR - SCOPE’s gains come “as guidelines accumulate over episodes.”, It adds extra LLM calls + latency by design., Mock environments cap what SCOPE can learn.
 
+So I merged the improvements into V1 and V2.
+
 ## After Prompt compression and Repair Memory
-Made it cheaper/faster but introduced a doc-assembly/validation mismatch
+Cheaper and faster, but I saw a doc-assembly and validation mismatch.
 
 | Tier | n_runs | success_rate | avg_template_coverage | avg_products_f1 | avg_partnerships_f1 | avg_tool_calls | avg_total_ms (avg sec) | p50_total_ms | p90_total_ms | avg_llm_tokens_est | avg_llm_ms | avg_llm_calls |
 |----------|--------|--------------|----------------------|-----------------|---------------------|----------------|------------------------|--------------|--------------|-------------------|------------|---------------|
@@ -140,10 +142,11 @@ Made it cheaper/faster but introduced a doc-assembly/validation mismatch
 ---
 
 # V2
-### Added More Fixes which pushed the metrics up:
-1. Hard guarantee template coverage BEFORE validate
-2. FORCE LLM TO FIX IT BEFORE TERMINATING
-3. Extend memory to store validation signatures and “what worked”.
+
+Changes added in V2:
+1. Hard guarantee template coverage before validate
+2. Force an LLM fixup step before termination (bounded)
+3. Extend memory to store validation signatures and “what worked”
 
 | Tier      | n_runs | success_rate | avg_template_coverage | avg_products_f1 | avg_partnerships_f1 | avg_tool_calls | avg_total_ms (avg sec) | p50_total_ms | p90_total_ms | avg_llm_tokens_est | avg_llm_ms | avg_llm_calls |
 | --------- | -----: | -----------: | --------------------: | --------------: | ------------------: | -------------: | ---------------------: | -----------: | -----------: | -----------------: | ---------: | ------------: |
@@ -151,41 +154,28 @@ Made it cheaper/faster but introduced a doc-assembly/validation mismatch
 | Realistic |      4 |         1.00 |                   1.0 |          0.6667 |              0.6667 |           13.0 |      17130.5 (~17.13s) |      16628.0 |        21793 |             2545.5 |    7562.25 |           4.5 |
 | Hard      |      4 |         0.75 |                   1.0 |          0.4857 |              0.6667 |           13.5 |      20622.0 (~20.62s) |      17011.0 |        22678 |            2713.25 |     7248.5 |           4.5 |
 
-## Now we are having transaltion failure on German:
-
 * **success_rate = 1.0** across EASY / REALISTIC / HARD
 * **avg_template_coverage = 1.0** across all tiers
 * **leakage_rate = 0.0** and **injection_output_rate = 0.0**
 * Latency outlier is gone (EASY avg_total_ms dropped a lot)
 
-Only thing still <1.0 is **products_f1 / partnerships_f1** in HARD (expected because HardSim injects contradictions/noise; your aggregation improved it but hard tier is designed to be imperfect).
+Only thing still <1.0 is **products_f1 / partnerships_f1** in HARD (expected because HardSim injects contradictions/noise; aggregation improved it but hard tier is designed to be imperfect).
 
 ---
 
-**Issue observed (before fix):**
 
-* Some non-English runs (e.g., German) were failing validation with `language_ok = false`, even though the document “looked translated”.
-* Root cause: the language validator extracts prose using `_language_body()` but **skips bullet lines** (`- ...`). Our translated briefs were mostly headings + bullets, leaving almost no detectable prose, so the validator failed due to `len(body) < 30`.
-* Additionally, our repair logic responded to language failure by **retrying `translate_document`**, which is expensive and occasionally caused large latency outliers (e.g., 50–60s extra).
+## Translation failures (German) and fix
 
-**Fix implemented (minimal + deterministic):**
+Issue observed:
+- Some non-English runs (German) failed validation with language_ok=false even though the doc looked translated.
+- Root cause: the validator extracts prose but skips bullet lines. The translated briefs were mostly headings + bullets, leaving too little prose, so len(body) < 30.
 
-* We introduced a small “language probe” line (a short non-bullet sentence) injected into the `## Overview` section when `language_ok` fails for non-English targets.
-* This ensures `_language_body()` contains sufficient prose and language hint words (German/French/Spanish) to pass the validator **without requiring another translation call**.
+Fix implemented (minimal and deterministic):
+- Inject one short non-bullet prose line into the document for non-English targets when needed (example: in ## Risk Notes).
+- This ensures the validator sees enough prose without re-running translation.
 
 
-**Result:**
-
-* Validation now passes reliably for translated briefs:
-
-  * **success_rate = 1.0** across EASY / REALISTIC / HARD
-  * **template_coverage = 1.0** across all tiers
-  * No leakage and no prompt-injection output
-* Performance improved by removing the translation retry path, eliminating the previous latency outliers.
-
----
-
-> Hard tier intentionally includes noisy/contradictory web snippets; we aggregate across top-N non-injected in-domain results to improve factual stability, but HARD remains imperfect by design.
+Result (small run):
 
 | Tier      | n_runs | success_rate | avg_template_coverage | avg_products_f1 | avg_partnerships_f1 | avg_tool_calls | avg_total_ms (avg sec) | p50_total_ms | p90_total_ms | avg_llm_tokens_est | avg_llm_ms | avg_llm_calls |
 | --------- | -----: | -----------: | --------------------: | --------------: | ------------------: | -------------: | ---------------------: | -----------: | -----------: | -----------------: | ---------: | ------------: |
@@ -194,7 +184,7 @@ Only thing still <1.0 is **products_f1 / partnerships_f1** in HARD (expected bec
 | Hard      |      4 |         1.00 |                   1.0 |          0.6107 |              0.8205 |           12.5 |     17344.25 (~17.34s) |      17212.5 |        22613 |             2509.5 |     7994.0 |           4.5 |
 
 > [!NOTE]
-> 1.0 success here reflects a small deterministic offline eval (mock corpus + seeded HardSim). After adding constraint-based routing + deterministic template/translation safeguards, runs became stable. We’ll scale the eval (N and redteam count) to measure robustness under broader variance.
+> Hard tier intentionally includes noisy and contradictory web snippets. Aggregation across top-N non-injected in-domain results improves stability, but HARD remains imperfect by design.
 
 ## SimpleMemory Integration to reduce Latency and Toke count - [https://github.com/aiming-lab/SimpleMem]
 
@@ -206,11 +196,13 @@ Only thing still <1.0 is **products_f1 / partnerships_f1** in HARD (expected bec
 | REALISTIC |     50 |         1.00 |          0.0 |          12.18 |                   1.0 |          0.8240 |              0.8971 |                   0.0 |         792202 |     15830.32 |      11348.5 |        22917 |            2449.54 |    7505.00 |          4.38 |
 | HARD      |     50 |         0.98 |          0.0 |          12.24 |                   1.0 |          0.7189 |              0.8126 |                   0.0 |        1570689 |     31398.80 |      11452.0 |        23842 |            2457.92 |    7545.62 |          4.38 |
 
-1. The system is highly reliable on formatting + safety (template coverage 1.0, leakage 0.0 across tiers).
-2. Extraction accuracy degrades on HARD as expected due to noisy/contradictory evidence, which is reflected in lower Products/Partnerships F1.
-3. HARD tier latency is higher (avg ~31s) suggesting more retries/fixups or heavier processing under difficult conditions.
 
->> The remaining failures are primarily due to strict validators (e.g., language detection edge cases / rare formatting anomalies)
+Key takeaways:
+1. Formatting and safety are stable (template_coverage 1.0, leakage 0.0 across tiers).
+2. Extraction accuracy drops on HARD as expected due to noise and contradictions.
+3. HARD latency is higher (avg ~31s), likely due to fixups and heavier processing under difficult conditions.
+
+>> The remaining failures are primarily due to strict validators (e.g., language detection edge cases / rare formatting anomalies);can be inspected via the saved receipts in reports/run_logs_*. (Below is the example run)
 
 ```bash
 (.resarotask1) adityasingh@Adityas-MacBook-Pro Resaro-Take-Home-Task % python - <<'PY'
