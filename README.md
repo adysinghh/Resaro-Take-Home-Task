@@ -16,6 +16,7 @@ This repo contains:
 Easy setup. UI includes buttons for bootstrap and validation.
 
 ```bash
+git clone https://github.com/adysinghh/Resaro-Take-Home-Task.git
 python -m venv .venv && source .venv/bin/activate
 pip install -r req.txt
 cp .env.example .env
@@ -27,6 +28,7 @@ streamlit run ui/app.py
 ### Option B: Run from terminal
 
 ```bash
+git clone https://github.com/adysinghh/Resaro-Take-Home-Task.git
 python -m venv .venv && source .venv/bin/activate
 pip install -r req.txt
 cp .env.example .env
