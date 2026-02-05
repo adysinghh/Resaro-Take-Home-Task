@@ -233,3 +233,30 @@ hard failed: 1
 ---
 ---
 
+## Streamlit UI (automation + demo)
+
+To make the workflow easy to run end-to-end, I built a small Streamlit UI that wraps the whole pipeline.
+
+What it covers:
+- Resaro-style color theme for the app layout
+- One-click flow to run setup, generate data, and trigger eval runs
+    * Quick Installation
+    * Quick Generate Data and Verify
+    * Quick Run (3 test + 1 redteam)
+    * Custom Run
+    * Side preview to quickly preview the generated output files + the JSON Instructions
+    * Section which shows the Reasoning Json after the RUN!
+- Terminal-style output console to show logs and progress in a readable way
+- Walk-through video section (demo + quick orientation)
+
+This UI is mainly for reviewer convenience: it reduces setup friction and makes it easy to verify outputs without jumping between scripts.
+
+## UI
+
+1. Home View:
+
+![UI home](ui/assets/ui_home.png)
+
+2. Document Preview After Run:
+
+![UI eval](ui/assets/ui_doc.png)
