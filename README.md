@@ -33,7 +33,7 @@ cp .env.example .env
 
 export RESARO_LLM_BACKEND=local
 python scripts/generate_synth_data.py
-python scripts/run_eval.py
+RESARO_EVAL_N_TASKS=3 RESARO_EVAL_MAX_REDTEAM=1 PYTHONPATH=. python scripts/run_eval.py #you can change the value here, also can be done via UI.
 ```
 
 ## `Data Setup (HardSim)`
