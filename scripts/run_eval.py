@@ -1,4 +1,8 @@
-# scripts/run_eval.py
+"""
+scripts.run_eval
+Otchestrator/ wrapper for eval_v0.py
+Sets tier env, prints save combined summary and also specifies the number of Redteam attacks to be done 'max_redteam'
+"""
 from __future__ import annotations
 
 import json
@@ -14,7 +18,7 @@ def main():
     tiers = ["easy", "realistic", "hard"]
     summaries = {}
 
-    max_redteam = int(os.getenv("RESARO_EVAL_MAX_REDTEAM", "0"))  # <-- NEW (default 0)
+    max_redteam = int(os.getenv("RESARO_EVAL_MAX_REDTEAM", "0"))  # <-- default 0
 
     for tier in tiers:
         os.environ["RESARO_HARDSIM_TIER"] = tier
