@@ -30,7 +30,7 @@ _NOISE_SHARE_BY_TIER = {"easy": 0.10, "realistic": 0.40, "hard": 0.60}
 _PICK_SECOND_PROB = {"hard": 0.50, "realistic": 0.25}
 
 # Aggregation defaults
-_DEFAULT_AGG_TOP_N = 5
+_DEFAULT_AGG_TOP_N = 5 # change this to 1 for more robust agent test 
 _TRACE_SOURCES_N = 5
 
 
@@ -262,6 +262,8 @@ def mock_web_search(company_name: str) -> dict:
     trace_tool_call("mock_web_search", {"company_name": company_name})
     
     # ---- Params & corpus load ----
+    # k = number of retrieved docs
+    # noise_share = fraction of docs from other companies (noise)
     tier, k, noise_share = _get_hardsim_params()
 
     by_company, all_docs = _load_web_corpus()
@@ -276,6 +278,13 @@ def mock_web_search(company_name: str) -> dict:
 
     # ---- Sample in-domain + noise docs ----
     # choose how many “in-domain” docs vs noise docs
+    
+    """
+        k = total results returned
+        noise_share = fraction of results that come from other companies (irrelevant)
+        n_in = results from the correct company
+        n_noise = irrelevant results from other companies
+    """
     n_noise = int(round(k * noise_share))
     n_in = max(1, k - n_noise)
 
@@ -336,7 +345,8 @@ def mock_web_search(company_name: str) -> dict:
     # -----------------------------
 
     # ---- Aggregate facts across top-N (V1 behavior) ----
-    top_n = int(os.getenv("RESARO_AGG_TOP_N", "5") or "5")
+    # top_n = int(os.getenv("RESARO_AGG_TOP_N", "5") or "5") # for more robust testing chage this to 1, effectively trust only top result.
+    top_n = int(os.getenv("RESARO_AGG_TOP_N", str(_DEFAULT_AGG_TOP_N)) or str(_DEFAULT_AGG_TOP_N))
     public_products, public_partnerships, aggregation_meta = _aggregate_facts(
         results=results,
         key=key,

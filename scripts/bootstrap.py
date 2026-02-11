@@ -1,3 +1,12 @@
+"""
+scripts.bootstrap
+Only for installing 'req.txt' and then 
+Streams 'pip' output line-by-line to terminal
+
+Ouputs: Installed deps.
+Prints: local LLM mode ✅ and [bootstrap] done ✅
+"""
+
 # scripts/bootstrap.py
 from __future__ import annotations
 
@@ -11,6 +20,8 @@ REQ = REPO_ROOT / "req.txt"
 
 def run(cmd: list[str], *, cwd: Path | None = None) -> int:
     print(f"\n$ {' '.join(cmd)}")
+
+    # runs a shell command and streams output
     p = subprocess.Popen(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -26,6 +37,8 @@ def run(cmd: list[str], *, cwd: Path | None = None) -> int:
 
 
 def install_requirements() -> None:
+
+    # If req.txt does not exists
     if not REQ.exists():
         raise FileNotFoundError(f"req.txt not found at {REQ}")
     code = run([sys.executable, "-m", "pip", "install", "-r", str(REQ)], cwd=REPO_ROOT)
