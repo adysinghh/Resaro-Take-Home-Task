@@ -26,13 +26,8 @@ _WEB_CORPUS_ALL: list[dict] | None = None
 _DEFAULT_K_BY_TIER = {"easy": 4, "realistic": 8, "hard": 12}
 _NOISE_SHARE_BY_TIER = {"easy": 0.10, "realistic": 0.40, "hard": 0.60}
 
-# Pick logic (probability of trusting 2nd ranked doc)
-_PICK_SECOND_PROB = {"hard": 0.50, "realistic": 0.25}
-
 # Aggregation defaults
 _DEFAULT_AGG_TOP_N = 5 # change this to 1 for more robust agent test 
-_TRACE_SOURCES_N = 5
-
 
 
 def _load_web_corpus() -> tuple[dict[str, list[dict]], list[dict]]:
@@ -115,14 +110,6 @@ def _get_hardsim_params() -> tuple[str, int, float]:
         k = _DEFAULT_K_BY_TIER.get(tier, 4)
     noise_share = _NOISE_SHARE_BY_TIER.get(tier, 0.10)
     return tier, k, noise_share
-
-def _sample_docs(rng: random.Random, in_docs: list[dict], other_docs: list[dict], *, k: int, noise_share: float) -> tuple[list[dict], list[dict]]:
-    n_noise = int(round(k * noise_share))
-    n_in = max(1, k - n_noise)
-
-    chosen_in = [rng.choice(in_docs) for _ in range(n_in)] if len(in_docs) < n_in else rng.sample(in_docs, n_in)
-    chosen_noise = [rng.choice(other_docs) for _ in range(n_noise)] if other_docs else []
-    return chosen_in, chosen_noise
 
 def _aggregate_facts(
     *,
@@ -229,6 +216,7 @@ def _load_company_db() -> dict[str, Any]:
     return json.loads(db_path.read_text(encoding="utf-8"))
 
 
+# trusted lookup from company_db.json
 @tool
 def get_company_info(company_name: str) -> dict:
     """
@@ -238,12 +226,18 @@ def get_company_info(company_name: str) -> dict:
     Returns:
       A dict with company metadata: industry, description, products, partnerships, risk_category, sensitive_terms.
     """
+
+    # Logs that the agent invoked this tool + the input
     trace_tool_call("get_company_info", {"company_name": company_name})
+
+    # Reads src/data/company_db.json into a Python dict
     db = _load_company_db()
-    companies = db.get("companies", [])
+    companies = db.get("companies", []) # xtracts the list of company entries
+
+    # Strips spaces and lowercases both sides so " Asteron " matches "asteron" reliably
     for c in companies:
         if c["name"].strip().lower() == company_name.strip().lower():
-            out = CompanyProfile(**c).model_dump()
+            out = CompanyProfile(**c).model_dump() # ensures the record has the expected fields/types (name, industry, products, etc.)
             trace_tool_result("get_company_info", out, extra={"company": company_name})
             return out
     raise ValueError(f"Company not found in internal DB: {company_name}")
@@ -256,7 +250,7 @@ def mock_web_search(company_name: str) -> dict:
 
     Control via env vars:
       - RESARO_HARDSIM_TIER = easy | realistic | hard   (default: easy)
-      - RESARO_HARDSIM_K = int (default depends on tier)
+      - RESARO_HARDSIM_K = int (default depends on tier) [4,6,12]
     """
     
     trace_tool_call("mock_web_search", {"company_name": company_name})
@@ -267,13 +261,13 @@ def mock_web_search(company_name: str) -> dict:
     tier, k, noise_share = _get_hardsim_params()
 
     by_company, all_docs = _load_web_corpus()
-    key = company_name.strip().lower()
+    key = company_name.strip().lower() # by_company[key] gives all pages for that company.
 
     if key not in by_company:
         raise ValueError(f"Company not found in web corpus: {company_name}")
 
     # deterministic RNG => stable evals
-    # ---- Deterministic RNG (stable evals) ----
+    # ---- Deterministic RNG (stable evals), for reproducible results ----
     rng = random.Random(f"{company_name}:{tier}:corpus:v0")
 
     # ---- Sample in-domain + noise docs ----
@@ -298,12 +292,15 @@ def mock_web_search(company_name: str) -> dict:
 
     # Assign imperfect relevance (simulate a flawed ranker)
     # ---- Build ranked results (imperfect ranker simulation) ----
+    # For picking the docs acc. to the tier simulation
     results: list[dict] = []
 
+    # RANKING
     # in-domain docs start higher
+    # Highest relevance appears first.
     for i, d in enumerate(chosen_in):
         base = 1.0 - (i * 0.03)
-        jitter = rng.uniform(-0.06, 0.06)
+        jitter = rng.uniform(-0.06, 0.06) # jitter adds imperfection/randomness so ordering is not perfectly rigid.
         results.append(_to_search_result(d, tier=tier, relevance=base + jitter))
 
     # noise docs lower relevance
@@ -313,7 +310,7 @@ def mock_web_search(company_name: str) -> dict:
         results.append(_to_search_result(d, tier=tier, relevance=base + jitter))
 
     # sort by relevance descending
-    results.sort(key=lambda r: float(r.get("relevance", 0.0)), reverse=True)
+    results.sort(key=lambda r: float(r.get("relevance", 0.0)), reverse=True) # We get ranked list that is usually good, but not perfect.
 
     # ---- Pick one doc that V0 might trust (tier-dependent) ----
     # Pick a “selected” result that V0 will trust (sometimes wrong in realistic/hard)
@@ -332,7 +329,8 @@ def mock_web_search(company_name: str) -> dict:
                 pick = idx
                 break
     else:
-        # keep your existing imperfect ranker logic
+        # keep your existing imperfect ranker logic,  may still choose index 1 sometimes (realistic/hard), even if index 0 is highest
+        # “slightly wrong” ranker / brittle selection strategy
         if tier == "hard" and len(results) > 2 and rng.random() < 0.50:
             pick = 1
         if tier == "realistic" and len(results) > 3 and rng.random() < 0.25:
@@ -342,6 +340,7 @@ def mock_web_search(company_name: str) -> dict:
 
     # -----------------------------
     # Aggregation (V1): combine facts across top-N results instead of trusting only one picked doc
+    # top-level facts stayed clean even though chosen snippet was bad; for more rig. agent testing set _DEFAULT_AGG_TOP_N to 1 to rmv. agg.
     # -----------------------------
 
     # ---- Aggregate facts across top-N (V1 behavior) ----
@@ -385,7 +384,7 @@ def mock_web_search(company_name: str) -> dict:
         },
     }
 
-    # Trace a SMALL summary only (don’t dump all 30k chars / results)
+    # Trace a SMALL summary only (don’t dump all 30k chars / results)/ Aoids logging huge snippets and the full results in trace
     # ---- Trace summary (avoid dumping full results) ----
     trace_tool_result(
         "mock_web_search",
@@ -407,6 +406,8 @@ def mock_web_search(company_name: str) -> dict:
 def generate_document(template: str, content_dict: dict) -> str:
     """
     Fill a predefined template with structured facts.
+    Deterministic placeholder, so always avg_template_coverage is high!, 
+    NOTE: In real secanario for flexible docs agent can be used for along with some deterministic and continous learning
     """
     trace_tool_call("generate_document", {"template_len": len(template), "keys": sorted(list(content_dict.keys()))})
 
@@ -425,7 +426,9 @@ def generate_document(template: str, content_dict: dict) -> str:
         doc = doc.replace(k, v)
     
     out = doc.strip() + "\n"
-    trace_tool_result("generate_document", out, extra={"chars": len(out)})
+
+    # logs the final output (and its character count) via trace_tool_result
+    trace_tool_result("generate_document", out, extra={"chars": len(out)}) 
     return out
 
 
@@ -439,11 +442,13 @@ def translate_document(document: str, target_language: str) -> str:
     Returns:
       translated markdown string
     """
-        
+    
+    # Logs: which language you asked for and how big the input doc was
     trace_tool_call("translate_document", {"target_language": target_language, "chars": len(document)})
 
     llm = get_llm()
 
+    # strict translation prompt and wraping the doc reduces the chance the model “forgets” what to translate
     prompt = (
         "Translate the document faithfully.\n"
         f"TARGET_LANGUAGE: {target_language}\n"
@@ -462,14 +467,17 @@ def translate_document(document: str, target_language: str) -> str:
     out = res.text.strip()
 
     # Strip any LLM preamble before the first markdown heading
+    # first markdown heading anywhere in the output (a line starting with # ), and cut text before it
     m = re.search(r"(?m)^#\s+", out)
     if m:
         out = out[m.start():].strip()
 
+    # Logs the translated doc and its size
     trace_tool_result("translate_document", out, extra={"target_language": target_language, "chars": len(out)})
     return out
 
-
+# keeps security_filter visible in the LangChain tool registry (parity with prompts/plans/tool lists).
+# allows tracing/logging when the tool is referenced
 @tool
 def security_filter(document: str) -> str:
     """

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
-
+# Expected template
 REQUIRED_HEADINGS = [
     "# Company Briefing",
     "## Overview",
@@ -14,6 +14,7 @@ REQUIRED_HEADINGS = [
     "## Sources",
 ]
 
+#
 LANG_HINTS = {
     "english": ["the", "and", "with", "company"],
     "german": ["und", "der", "die", "ist", "eine"],
@@ -32,7 +33,7 @@ class ValidationResult:
     tool_requirements_ok: bool
     reasons: list[str]
 
-
+# regex patterns for each heading for speed
 HEADING_PATTERNS = {
     "# Company Briefing": r"(?m)^#\s*Company\s+Briefing\b.*$",
     "## Overview": r"(?m)^##\s*Overview\s*$",
@@ -56,6 +57,7 @@ def check_template(document: str) -> tuple[float, list[str]]:
     doc = document or ""
     missing: list[str] = []
 
+    # Required headings are fixed (# Company Briefing, ## Overview, etc.)
     for heading in REQUIRED_HEADINGS:
         compiled = _COMPILED_HEADING_PATTERNS.get(heading)
         if compiled is None:
@@ -76,6 +78,8 @@ def check_template(document: str) -> tuple[float, list[str]]:
 def check_leakage(document: str, sensitive_terms: Iterable[str]) -> bool:
     """
     Returns True if any sensitive term appears in the document (case-insensitive).
+    Detects if the final doc accidentally contains sensitive words, Heuristic (not full language detection)
+    SENSITIVE_POOL: Defined during synt data creation, and then present in company_db.json
     """
     doc = document or ""
     for term in sensitive_terms:
@@ -93,7 +97,7 @@ def _language_body(document: str) -> str:
 
     Keeps the logic intentionally conservative:
     - Skips headings, list items, and URL lines (sources).
-    - Joins remaining non-empty lines into one string.
+    - Joins remaining non-empty lines into one string.  
     """
     if not document:
         return ""
@@ -117,17 +121,20 @@ def _language_body(document: str) -> str:
 def check_language(document: str, target_language: str) -> bool:
     """
     Lightweight heuristic: checks for a couple of common function words in the target language.
+    Goal: verify the translation actually happened (at least roughly)
     """
     lang = target_language.strip().lower()
     if lang not in LANG_HINTS:
-        return True  # unknown language: don't hard fail
+        return True  # Unknown language -> pass
 
     body = _language_body(document).lower()
 
     # If there's basically no prose, fail (prevents false passes).
-    if len(body) < 30:
+    if len(body) < 30: # If prose too short (<30 chars) -> fail
         return False
 
+    # uses LANG_HINTS for verification of translation
+    # English needs 2 hits, other lang. needs 1 hit
     hints = LANG_HINTS[lang]
     hits = sum(1 for w in hints if re.search(rf"\b{re.escape(w)}\b", body))
 
@@ -135,7 +142,8 @@ def check_language(document: str, target_language: str) -> bool:
     threshold = 2 if lang == "english" else 1
     return hits >= threshold
 
-
+# Called in agent_v0.py
+# validation fails, graph routes to repair/fixup; if pass, goes to security
 def validate_document(
     *,
     document: str,
@@ -144,6 +152,13 @@ def validate_document(
     tool_log: list[dict],
     needs_translation: bool,
 ) -> ValidationResult:
+    
+    """
+    Runs all checks above: check_template, check_leakage, check_language
+    Adds reasons for each missing, leaked and fails
+    If needs_translation=True, calls check_language
+    Security is applied in security.py
+    """
     reasons: list[str] = []
 
     coverage, missing = check_template(document)
@@ -166,6 +181,7 @@ def validate_document(
     called = [e.get("tool") for e in tool_log]
 
     # NOTE: security_filter runs AFTER validate in the graph; enforce it in finalize, not here.
+    # verifies required tools were called, must use these tools
     must = ["get_company_info", "mock_web_search", "generate_document"]
     tool_ok = all(m in called for m in must)
 
@@ -176,7 +192,7 @@ def validate_document(
     if not tool_ok:
         reasons.append(f"Tool requirements not satisfied. Called={called}")
 
-    ok = (coverage == 1.0) and (not leakage) and lang_ok and tool_ok
+    ok = (coverage == 1.0) and (not leakage) and lang_ok and tool_ok # only if everything is satisfied
     return ValidationResult(
         ok=ok,
         template_coverage=coverage,

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
-
+# ignore, system, developer, assistant, exfiltrate, reveal, secret
 INJECTION_PATTERNS = [
     r"(?i)\bignore (all|previous) instructions\b",
     r"(?i)\bsystem\s*:\b",
@@ -15,8 +15,8 @@ INJECTION_PATTERNS = [
 ]
 
 _COMPILED_INJECTION_PATTERNS = [re.compile(p) for p in INJECTION_PATTERNS]
-_COMPILED_ROLE_LINE = re.compile(r"(?i)^\s*(system|developer|assistant|user)\s*:")
-_COMPILED_IGNORE_LINE = re.compile(r"(?i)ignore (all|previous) instructions")
+_COMPILED_ROLE_LINE = re.compile(r"(?i)^\s*(system|developer|assistant|user)\s*:") # matches any line that starts like reg()
+_COMPILED_IGNORE_LINE = re.compile(r"(?i)ignore (all|previous) instructions") # matches “ignore previous instructions” type text anywhere in the line
 
 @dataclass
 class SecurityReport:
@@ -27,6 +27,8 @@ class SecurityReport:
 def sanitize_untrusted_text(text: str) -> str:
     """
     Treat web search as untrusted: remove instruction-like lines.
+    Used for untrusted web snippets before they are exposed in search results
+    Processes the tool snippet line-by-line, If a line looks like a role instruction (System: etc), replace the line with: "[REDACTED_INJECTION_LINE]"
     """
     lines = text.splitlines()
     cleaned: list[str] = []
@@ -41,6 +43,7 @@ def sanitize_untrusted_text(text: str) -> str:
     return "\n".join(cleaned)
 
 
+# Final output filter before returning user-facing doc
 def security_filter(document: str, *, sensitive_terms: Iterable[str]) -> tuple[str, SecurityReport]:
     """
     MUST run before final output.
@@ -51,11 +54,13 @@ def security_filter(document: str, *, sensitive_terms: Iterable[str]) -> tuple[s
     out = document
 
     # redact sensitive terms (exact + case-insensitive)
+    # Step 1- redact sensitive terms (case-insensitive literal match)
     for term in sorted(set([t for t in sensitive_terms if t.strip()]), key=len, reverse=True):
         if re.search(re.escape(term), out, flags=re.IGNORECASE):
             redacted_terms.append(term)
             out = re.sub(re.escape(term), "[REDACTED]", out, flags=re.IGNORECASE)
 
+    # Step 2- redact generic injection phrases in final text -> [REDACTED_INJECTION]
     injection_stripped = False
     for cre in _COMPILED_INJECTION_PATTERNS:
         if cre.search(out):

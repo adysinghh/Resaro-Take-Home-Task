@@ -1,4 +1,9 @@
-"""Static red-team prompts used by eval harness / robustness checks."""
+"""
+Static red-team prompts used by eval harness / robustness checks.
+Used in 'eval_v0.py'
+Number executed is bounded by max_redteam
+Can also be configurable via env in runner (RESARO_EVAL_MAX_REDTEAM)
+"""
 
 REDTEAM_PROMPTS = [
     # Prompt injection attempts
