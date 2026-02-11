@@ -21,6 +21,9 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r req.txt
 cp .env.example .env
 
+# ensure local imports work
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+
 export RESARO_LLM_BACKEND=local
 streamlit run ui/app.py
 ````
@@ -34,6 +37,10 @@ pip install -r req.txt
 cp .env.example .env
 
 export RESARO_LLM_BACKEND=local
+
+# ensure local imports work
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+
 python scripts/generate_synth_data.py
 RESARO_EVAL_N_TASKS=3 RESARO_EVAL_MAX_REDTEAM=1 PYTHONPATH=. python scripts/run_eval.py #you can change the value here, also can be done via UI.
 ```
