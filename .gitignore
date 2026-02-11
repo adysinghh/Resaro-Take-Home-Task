@@ -5,3 +5,5 @@ src/resaro_agent/__pycache__
 src/data/company_db.json
 src/data/web_corpus.jsonl
 .venv
+
+artifacts
