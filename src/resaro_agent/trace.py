@@ -10,20 +10,22 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+# A context-local slot storing the active TraceRecorder
+# Using contextvars means concurrent runs can each have separate trace state safely.
 TRACE_CTX: contextvars.ContextVar[Optional["TraceRecorder"]] = contextvars.ContextVar(
     "RESARO_TRACE",
     default=None,
 )
 
-
+# current timestamp in milliseconds.
 def now_ms() -> int:
     return int(time.time() * 1000)
 
-
+# SHA256 hash shortened to 12 chars (used to log prompt identity without full prompt only)
 def _short_hash(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
-
+# converts anything to string and truncates for previews (keeps trace files readable)
 def _clip(s: Any, n: int = 800) -> str:
     """
     Safely clip any value to a short string for previews/logging.
@@ -38,15 +40,14 @@ def _clip(s: Any, n: int = 800) -> str:
 @dataclass
 class TraceEvent:
     ts_ms: int
-    kind: str
+    kind: str # event type (e.g., "tool_call", "tool_result", "llm_plan", etc.)
     data: dict[str, Any]
 
 
 class TraceRecorder:
     """
     Stores events in-memory and optionally writes JSONL incrementally.
-
-    Good for eval: you can compare traces across V0/V1/V2/V3.
+    Good for eval, can compare traces across V0/V1/V2/V3
     """
 
     def __init__(self, run_id: str, out_dir: str, *, stream_jsonl: bool = True):

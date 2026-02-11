@@ -327,7 +327,7 @@ def _redact_thought(thought: str, state: GraphState) -> str:
     sensitive = []
     if state.get("company_profile"):
         sensitive = state["company_profile"].get("sensitive_terms", []) or []
-    filtered, _ = security_filter_impl(thought, sensitive_terms=sensitive)
+    filtered, _ = security_filter_impl(thought, sensitive_terms=sensitive) # from .security import security_filter
     return filtered.strip()
 
 def reflact_node(state: GraphState) -> GraphState:

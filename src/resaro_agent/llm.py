@@ -57,7 +57,7 @@ class BaseLLM:
     def generate(self, prompt: str, *, max_new_tokens: int, temperature: float) -> LLMResult:
         raise NotImplementedError
 
-
+# Mocked LLM Behaviour 
 class MockLLM(BaseLLM):
     def generate(self, prompt: str, *, max_new_tokens: int, temperature: float) -> LLMResult:
         t0 = time.time()
@@ -109,6 +109,7 @@ class TracedLLM(BaseLLM):
         )
         return res
 
+# Using Local model
 class LocalTransformersLLM(BaseLLM):
     _tokenizer = None
     _model = None
@@ -201,6 +202,7 @@ class LocalTransformersLLM(BaseLLM):
         latency_ms = int((time.time() - t0) * 1000)
         return LLMResult(text=text, tokens_estimate=_estimate_tokens(prompt) + _estimate_tokens(text), latency_ms=latency_ms)
 
+# Using HF model
 class HuggingFaceInferenceLLM(BaseLLM):
     """
     Remote HF router/provider via huggingface_hub InferenceClient.
