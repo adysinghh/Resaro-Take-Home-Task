@@ -411,6 +411,7 @@ Rules:
     if stage_override in [None, "null"]:
         stage_override = None
 
+    # stores reflact_text
     updates: dict[str, Any] = {"reflact": r, "reflact_text": refl[:400]}
 
     # Only override if it helps prevent empty/invalid validation
@@ -531,6 +532,7 @@ def react_decide(state: GraphState) -> GraphState:
     # LLM must output JSON, but tool is locked to forced_tool.
     memory_context = (state.get("memory_context") or "").strip()
 
+    # reads and uses it in prompt
     refl = (state.get("reflact_text") or "").strip()
 
     prompt = f"""
@@ -685,6 +687,7 @@ def _tool_error_observation(tool: str, err: Exception) -> str:
 def react_dispatch(state: GraphState) -> GraphState:
     """
     Execute the chosen tool, update state, and loop back.
+    Updates stage only on successful/handled progression and logs every call.
     """
     act = state.get("next_action") or {}
     tool = act.get("tool")
