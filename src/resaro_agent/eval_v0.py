@@ -129,8 +129,10 @@ def _accumulate_perf_metrics(
     *,
     total_ms_list: List[int],
     llm_tokens_list: List[int],
-    llm_ms_list: List[int],
-    llm_calls_list: List[int],
+    llm_ms_all_list: List[int],
+    llm_calls_all_list: List[int],
+    llm_ms_decide_plan_list: List[int],
+    llm_calls_decide_plan_list: List[int],
 ) -> None:
     """
     Collects latency and LLM usage counters from each run receipt.
@@ -139,11 +141,25 @@ def _accumulate_perf_metrics(
     total_ms_list.append(int(m.get("total_ms", 0)))
     llm_tokens_list.append(int(m.get("llm_tokens_est", 0)))
 
-    llm_total_ms = int(m.get("llm_decide_ms", 0)) + int(m.get("llm_plan_ms", 0))
-    llm_ms_list.append(llm_total_ms)
+    llm_decide_ms = int(m.get("llm_decide_ms", 0))
+    llm_plan_ms = int(m.get("llm_plan_ms", 0))
+    llm_reflect_ms = int(m.get("llm_reflect_ms", 0))
+    llm_fixup_ms = int(m.get("llm_fixup_ms", 0))
 
-    llm_total_calls = int(m.get("llm_decide_calls", 0)) + int(m.get("llm_plan_calls", 0))
-    llm_calls_list.append(llm_total_calls)
+    llm_decide_calls = int(m.get("llm_decide_calls", 0))
+    llm_plan_calls = int(m.get("llm_plan_calls", 0))
+    llm_reflect_calls = int(m.get("llm_reflect_calls", 0))
+    llm_fixup_calls = int(m.get("llm_fixup_calls", 0))
+
+    llm_ms_decide_plan = llm_decide_ms + llm_plan_ms
+    llm_calls_decide_plan = llm_decide_calls + llm_plan_calls
+    llm_ms_all = llm_ms_decide_plan + llm_reflect_ms + llm_fixup_ms
+    llm_calls_all = llm_calls_decide_plan + llm_reflect_calls + llm_fixup_calls
+
+    llm_ms_decide_plan_list.append(llm_ms_decide_plan)
+    llm_calls_decide_plan_list.append(llm_calls_decide_plan)
+    llm_ms_all_list.append(llm_ms_all)
+    llm_calls_all_list.append(llm_calls_all)
 
 # Write files for each run, under reports/(easy/realistic/hard)
 def _write_run_artifacts(out_dir: str, *, prefix: str, idx_1based: int, receipt: dict, final_doc: str) -> None:
@@ -164,19 +180,27 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
     # Initialize trackers: lists that collect results from each run so we can average them later
     ###################################
     rows: list[EvalRow] = []
+    task_rows: list[EvalRow] = []
+    redteam_rows: list[EvalRow] = []
     receipts: list[dict] = []
 
     # extra metric trackers
     f1_products: list[float] = []
     f1_partners: list[float] = []
     inj_flags: list[bool] = []
+    inj_flags_tasks: list[bool] = []
+    inj_flags_redteam: list[bool] = []
 
     db = _load_db()
 
     total_ms_list = []
     llm_tokens_list = []
-    llm_ms_list = []
-    llm_calls_list = []
+    llm_ms_all_list = []
+    llm_calls_all_list = []
+    llm_ms_decide_plan_list = []
+    llm_calls_decide_plan_list = []
+    non_llm_tool_calls_list = []
+    llm_node_calls_list = []
     ###################################
 
     # ---- Run standard tasks ----
@@ -190,15 +214,17 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
         """
         total_ms → total time for the run
         llm_tokens_est → approximate token usage
-        llm_decide_ms + llm_plan_ms → time spent inside LLM calls
-        llm_decide_calls + llm_plan_calls → number of LLM calls
+        llm_*_ms → time spent inside LLM calls (plan/decide/reflect/fixup)
+        llm_*_calls → number of LLM calls across those nodes
         """
         _accumulate_perf_metrics(
             m,
             total_ms_list=total_ms_list,
             llm_tokens_list=llm_tokens_list,
-            llm_ms_list=llm_ms_list,
-            llm_calls_list=llm_calls_list,
+            llm_ms_all_list=llm_ms_all_list,
+            llm_calls_all_list=llm_calls_all_list,
+            llm_ms_decide_plan_list=llm_ms_decide_plan_list,
+            llm_calls_decide_plan_list=llm_calls_decide_plan_list,
         )
 
         # --- compute accuracy metrics using ground truth ---
@@ -222,6 +248,7 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
         f1_products.append(products_f1)
         f1_partners.append(partners_f1)
         inj_flags.append(bool(inj_in_output))
+        inj_flags_tasks.append(bool(inj_in_output))
 
         # attach to receipt so it gets saved
         # this writes - task_1.json and task_1_final.md
@@ -230,6 +257,14 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
         receipt["metrics"]["products_f1"] = products_f1
         receipt["metrics"]["partnerships_f1"] = partners_f1
         receipt["metrics"]["injection_in_output"] = bool(inj_in_output)
+
+        tl = receipt.get("tool_log", []) or []
+        llm_nodes = sum(1 for e in tl if str(e.get("tool", "")).startswith("llm_"))
+        non_llm_nodes = max(0, len(tl) - llm_nodes)
+        receipt["metrics"]["non_llm_tool_calls"] = non_llm_nodes
+        receipt["metrics"]["llm_node_calls"] = llm_nodes
+        non_llm_tool_calls_list.append(non_llm_nodes)
+        llm_node_calls_list.append(llm_nodes)
 
         receipts.append(receipt)
 
@@ -246,6 +281,7 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
             tool_calls=int(m.get("tool_calls", 0)),
             total_ms=int(m.get("total_ms", 0)),
         ))
+        task_rows.append(rows[-1])
 
     
     # Red-Team subset
@@ -260,16 +296,28 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
             m,
             total_ms_list=total_ms_list,
             llm_tokens_list=llm_tokens_list,
-            llm_ms_list=llm_ms_list,
-            llm_calls_list=llm_calls_list,
+            llm_ms_all_list=llm_ms_all_list,
+            llm_calls_all_list=llm_calls_all_list,
+            llm_ms_decide_plan_list=llm_ms_decide_plan_list,
+            llm_calls_decide_plan_list=llm_calls_decide_plan_list,
         )
         
         final_doc = out.get("final", "") or ""
-        inj_flags.append(bool(_contains_injection_markers(final_doc)))
+        inj = bool(_contains_injection_markers(final_doc))
+        inj_flags.append(inj)
+        inj_flags_redteam.append(inj)
 
         # (optional) include injection metric in redteam receipts too
         receipt.setdefault("metrics", {})
-        receipt["metrics"]["injection_in_output"] = bool(_contains_injection_markers(final_doc))
+        receipt["metrics"]["injection_in_output"] = inj
+
+        tl = receipt.get("tool_log", []) or []
+        llm_nodes = sum(1 for e in tl if str(e.get("tool", "")).startswith("llm_"))
+        non_llm_nodes = max(0, len(tl) - llm_nodes)
+        receipt["metrics"]["non_llm_tool_calls"] = non_llm_nodes
+        receipt["metrics"]["llm_node_calls"] = llm_nodes
+        non_llm_tool_calls_list.append(non_llm_nodes)
+        llm_node_calls_list.append(llm_nodes)
 
         receipts.append(receipt)
 
@@ -284,6 +332,7 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
             tool_calls=int(m.get("tool_calls", 0)),
             total_ms=int(m.get("total_ms", 0)),
         ))
+        redteam_rows.append(rows[-1])
 
     # aggregate metrics
     n = len(rows)
@@ -294,7 +343,22 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
 
     avg_products_f1 = sum(f1_products) / max(1, len(f1_products))
     avg_partnerships_f1 = sum(f1_partners) / max(1, len(f1_partners))
+    n_tasks = len(task_rows)
+    n_redteam = len(redteam_rows)
+
+    success_rate_tasks = sum(1 for r in task_rows if r.success) / max(1, n_tasks)
+    leakage_rate_tasks = sum(1 for r in task_rows if r.leakage_flag) / max(1, n_tasks)
+    avg_tools_tasks = sum(r.tool_calls for r in task_rows) / max(1, n_tasks)
+    avg_cov_tasks = sum(r.template_coverage for r in task_rows) / max(1, n_tasks)
+
+    success_rate_redteam = sum(1 for r in redteam_rows if r.success) / max(1, n_redteam)
+    leakage_rate_redteam = sum(1 for r in redteam_rows if r.leakage_flag) / max(1, n_redteam)
+    avg_tools_redteam = sum(r.tool_calls for r in redteam_rows) / max(1, n_redteam)
+    avg_cov_redteam = sum(r.template_coverage for r in redteam_rows) / max(1, n_redteam)
+
     injection_output_rate = sum(1 for b in inj_flags if b) / max(1, len(inj_flags))
+    injection_output_rate_tasks = sum(1 for b in inj_flags_tasks if b) / max(1, len(inj_flags_tasks))
+    injection_output_rate_redteam = sum(1 for b in inj_flags_redteam if b) / max(1, len(inj_flags_redteam))
 
     suite_total_ms = int((time.time() - t_suite0) * 1000)
 
@@ -313,13 +377,28 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
     """
     summary = {
         "n_runs": n,
+        "n_task_runs": n_tasks,
+        "n_redteam_runs": n_redteam,
         "success_rate": success_rate,
+        "success_rate_tasks": success_rate_tasks,
+        "success_rate_redteam": success_rate_redteam,
         "leakage_rate": leakage_rate,
+        "leakage_rate_tasks": leakage_rate_tasks,
+        "leakage_rate_redteam": leakage_rate_redteam,
         "avg_tool_calls": avg_tools,
+        "avg_tool_calls_tasks": avg_tools_tasks,
+        "avg_tool_calls_redteam": avg_tools_redteam,
+        "avg_non_llm_tool_calls": sum(non_llm_tool_calls_list) / max(1, len(non_llm_tool_calls_list)),
+        "avg_llm_node_calls_from_log": sum(llm_node_calls_list) / max(1, len(llm_node_calls_list)),
         "avg_template_coverage": avg_cov,
+        "avg_template_coverage_tasks": avg_cov_tasks,
+        "avg_template_coverage_redteam": avg_cov_redteam,
         "avg_products_f1": avg_products_f1,
         "avg_partnerships_f1": avg_partnerships_f1,
+        "f1_scored_runs": len(f1_products),
         "injection_output_rate": injection_output_rate,
+        "injection_output_rate_tasks": injection_output_rate_tasks,
+        "injection_output_rate_redteam": injection_output_rate_redteam,
 
         # --- NEW perf metrics ---
         "suite_total_ms": suite_total_ms,
@@ -327,8 +406,10 @@ def run_suite(out_dir: str = "reports/run_logs", max_redteam: int = 6) -> dict:
         "p50_total_ms": median(total_ms_list) if total_ms_list else 0, # typical run time
         "p90_total_ms": _p90(total_ms_list),                           # “worst-case-ish” time
         "avg_llm_tokens_est": sum(llm_tokens_list) / max(1, len(llm_tokens_list)), # rough cost proxy
-        "avg_llm_ms": sum(llm_ms_list) / max(1, len(llm_ms_list)),
-        "avg_llm_calls": sum(llm_calls_list) / max(1, len(llm_calls_list)), # how many times you hit the model per task
+        "avg_llm_ms": sum(llm_ms_all_list) / max(1, len(llm_ms_all_list)),
+        "avg_llm_calls": sum(llm_calls_all_list) / max(1, len(llm_calls_all_list)),
+        "avg_llm_ms_decide_plan": sum(llm_ms_decide_plan_list) / max(1, len(llm_ms_decide_plan_list)),
+        "avg_llm_calls_decide_plan": sum(llm_calls_decide_plan_list) / max(1, len(llm_calls_decide_plan_list)),
     }
 
     Path(out_dir, "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
