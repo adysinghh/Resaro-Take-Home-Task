@@ -1,70 +1,159 @@
 from __future__ import annotations
 
+import os
 import re
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Iterable
 
-# ignore, system, developer, assistant, exfiltrate, reveal, secret
-INJECTION_PATTERNS = [
-    r"(?i)\bignore (all|previous) instructions\b",
-    r"(?i)\bsystem\s*:\b",
-    r"(?i)\bdeveloper\s*:\b",
-    r"(?i)\bassistant\s*:\b",
-    r"(?i)\bexfiltrate\b",
-    r"(?i)\breveal\b.*\bsecret\b",
-]
+from .config import SETTINGS
 
-_COMPILED_INJECTION_PATTERNS = [re.compile(p) for p in INJECTION_PATTERNS]
-_COMPILED_ROLE_LINE = re.compile(r"(?i)^\s*(system|developer|assistant|user)\s*:") # matches any line that starts like reg()
-_COMPILED_IGNORE_LINE = re.compile(r"(?i)ignore (all|previous) instructions") # matches “ignore previous instructions” type text anywhere in the line
 
 @dataclass
 class SecurityReport:
     redacted_terms: list[str]
     injection_stripped: bool
+    blocked: bool = False
+    block_reason: str | None = None
+    policy_id: str | None = None
+    policy_version: str | None = None
+    tags: list[str] = field(default_factory=list)
+    counters: dict[str, int] = field(default_factory=dict)
+
+
+def _vendored_secguard_src() -> Path:
+    # resaro_agent/security.py -> ../secguard/src
+    return Path(__file__).resolve().parents[1] / "secguard" / "src"
+
+
+def _ensure_secguard_importable() -> None:
+    try:
+        from secguard.engine import Engine  # noqa: F401
+        return
+    except Exception:
+        vendored_src = _vendored_secguard_src()
+        if vendored_src.exists() and str(vendored_src) not in sys.path:
+            sys.path.insert(0, str(vendored_src))
+
+    from secguard.engine import Engine  # noqa: F401
+
+
+@lru_cache(maxsize=1)
+def _engine():
+    _ensure_secguard_importable()
+    from secguard.engine import Engine
+
+    policy_path = Path(SETTINGS.secguard_policy_path)
+    if not policy_path.is_absolute():
+        policy_path = Path.cwd() / policy_path
+    if not policy_path.exists():
+        raise FileNotFoundError(
+            f"secguard policy not found: {policy_path}. "
+            "Set RESARO_SECGUARD_POLICY to a valid file path."
+        )
+    return Engine.from_yaml(str(policy_path))
+
+
+def _promptguard_enabled() -> bool:
+    val = str(getattr(SETTINGS, "secguard_enable_promptguard", False)).strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _apply_policy(
+    text: str,
+    *,
+    source: str,
+    stage: str,
+    trust: str,
+    sensitive_terms: Iterable[str] | None = None,
+):
+    _ensure_secguard_importable()
+    from secguard.types import Context
+
+    runtime = {
+        "sensitive_terms": [str(t) for t in (sensitive_terms or []) if str(t).strip()]
+    }
+
+    # PromptGuard is enabled by default via config.
+    # If explicitly disabled, set env flag so matcher short-circuits.
+    added_disable_env = False
+    if not _promptguard_enabled():
+        has_disable_override = (
+            os.getenv("SECGUARD_DISABLE_PROMPTGUARD") is not None
+            or os.getenv("SECGUARD_DISABLE_DETECTORS") is not None
+        )
+        if not has_disable_override:
+            os.environ["SECGUARD_DISABLE_PROMPTGUARD"] = "1"
+            added_disable_env = True
+
+    try:
+        ctx = Context(source=source, stage=stage, trust=trust)
+        return _engine().apply(text, ctx, runtime=runtime)
+    finally:
+        if added_disable_env:
+            os.environ.pop("SECGUARD_DISABLE_PROMPTGUARD", None)
+
+
+def _detect_sensitive_term_hits(document: str, sensitive_terms: Iterable[str]) -> list[str]:
+    hits: list[str] = []
+    out = document or ""
+    terms = sorted(set(str(t) for t in sensitive_terms if str(t).strip()), key=len, reverse=True)
+    for term in terms:
+        if re.search(re.escape(term), out, flags=re.IGNORECASE):
+            hits.append(term)
+    return hits
 
 
 def sanitize_untrusted_text(text: str) -> str:
     """
-    Treat web search as untrusted: remove instruction-like lines.
-    Used for untrusted web snippets before they are exposed in search results
-    Processes the tool snippet line-by-line, If a line looks like a role instruction (System: etc), replace the line with: "[REDACTED_INJECTION_LINE]"
+    Treat web snippets as untrusted and sanitize them with secguard policy.
     """
-    lines = text.splitlines()
-    cleaned: list[str] = []
-    for ln in lines:
-        if _COMPILED_ROLE_LINE.search(ln):
-            cleaned.append("[REDACTED_INJECTION_LINE]")
-            continue
-        if _COMPILED_IGNORE_LINE.search(ln):
-            cleaned.append("[REDACTED_INJECTION_LINE]")
-            continue
-        cleaned.append(ln)
-    return "\n".join(cleaned)
+    decision = _apply_policy(
+        text,
+        source="tool_output:web",
+        stage="post_tool",
+        trust="untrusted",
+    )
+    return decision.text
 
 
 # Final output filter before returning user-facing doc
+
 def security_filter(document: str, *, sensitive_terms: Iterable[str]) -> tuple[str, SecurityReport]:
     """
     MUST run before final output.
-    - Redact sensitive terms.
-    - Strip common injection phrases if present.
+    - Redact caller-provided sensitive terms.
+    - Redact/contain prompt-injection patterns per secguard policy.
+    - Optionally block if policy/detector says so.
     """
-    redacted_terms: list[str] = []
-    out = document
+    redacted_terms = _detect_sensitive_term_hits(document, sensitive_terms)
 
-    # redact sensitive terms (exact + case-insensitive)
-    # Step 1- redact sensitive terms (case-insensitive literal match)
-    for term in sorted(set([t for t in sensitive_terms if t.strip()]), key=len, reverse=True):
-        if re.search(re.escape(term), out, flags=re.IGNORECASE):
-            redacted_terms.append(term)
-            out = re.sub(re.escape(term), "[REDACTED]", out, flags=re.IGNORECASE)
+    decision = _apply_policy(
+        document,
+        source="final_output",
+        stage="pre_final",
+        trust="trusted",
+        sensitive_terms=sensitive_terms,
+    )
 
-    # Step 2- redact generic injection phrases in final text -> [REDACTED_INJECTION]
-    injection_stripped = False
-    for cre in _COMPILED_INJECTION_PATTERNS:
-        if cre.search(out):
-            injection_stripped = True
-            out = cre.sub("[REDACTED_INJECTION]", out)
-    
-    return out, SecurityReport(redacted_terms=redacted_terms, injection_stripped=injection_stripped)
+    # Fail closed when policy blocks.
+    out = "[BLOCKED_BY_SECURITY_POLICY]" if decision.blocked else decision.text
+
+    injection_stripped = any(
+        m.rule_id == "FINAL_INJECTION_REDACT" or m.action == "quote_block"
+        for m in decision.report.mutations
+    )
+
+    report = SecurityReport(
+        redacted_terms=redacted_terms,
+        injection_stripped=injection_stripped,
+        blocked=decision.blocked,
+        block_reason=decision.block_reason,
+        policy_id=decision.report.policy_id,
+        policy_version=decision.report.policy_version,
+        tags=sorted(decision.report.tags),
+        counters=dict(decision.report.counters),
+    )
+    return out, report

@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 @dataclass(frozen=True)
 class Settings:
     # Prefer RESARO_* env vars, fall back to older names for compatibility.
@@ -24,5 +25,15 @@ class Settings:
     max_new_tokens: int = int(os.getenv("MAX_NEW_TOKENS", "600"))
     temperature: float = float(os.getenv("TEMPERATURE", "0.2"))
     retry_budget: int = int(os.getenv("RETRY_BUDGET", "1"))  # V0: minimal retry for validation failures
-    
+
+    # secguard integration
+    secguard_policy_path: str = os.getenv("RESARO_SECGUARD_POLICY", "src/secguard/policies/security.yaml")
+    secguard_enable_promptguard: bool = os.getenv("RESARO_ENABLE_PROMPTGUARD", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 SETTINGS = Settings()
