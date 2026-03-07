@@ -4,16 +4,10 @@ pydantic
 python-dotenv
 requests
 pytest
-
 huggingface-hub
-
-python-dotenv
-requests
-
 torch
 transformers
 accelerate
 safetensors
-
-pydantic
 streamlit
+pyyaml>=6.0
