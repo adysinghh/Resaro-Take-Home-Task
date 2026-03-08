@@ -54,6 +54,7 @@ cd ..
 python scripts/generate_synth_data.py
 RESARO_EVAL_N_TASKS=3 RESARO_EVAL_MAX_REDTEAM=1 PYTHONPATH=. python scripts/run_eval.py
 ```
+Refer to https://github.com/adysinghh/secguard for setting up secguard
 
 ## `Data Setup (HardSim)`
 
