@@ -32,6 +32,8 @@ streamlit run ui/app.py
 
 ```bash
 git clone https://github.com/adysinghh/Resaro-Take-Home-Task.git
+
+# setup
 python -m venv .venv && source .venv/bin/activate
 pip install -r req.txt
 cp .env.example .env
@@ -41,8 +43,16 @@ export RESARO_LLM_BACKEND=local
 # ensure local imports work
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
+# install 'secguard' for security layer
+cd src
+git clone https://github.com/adysinghh/secguard.git
+
+# go back to root
+cd ..
+
+# run evals
 python scripts/generate_synth_data.py
-RESARO_EVAL_N_TASKS=3 RESARO_EVAL_MAX_REDTEAM=1 PYTHONPATH=. python scripts/run_eval.py #you can change the value here, also can be done via UI.
+RESARO_EVAL_N_TASKS=3 RESARO_EVAL_MAX_REDTEAM=1 PYTHONPATH=. python scripts/run_eval.py
 ```
 
 ## `Data Setup (HardSim)`
