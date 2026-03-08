@@ -17,8 +17,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REQ = REPO_ROOT / "req.txt"
 
-# keep secguard inside src, but under a repo folder name
-SECGUARD_DIR = REPO_ROOT / "src"
+# clone INSIDE src/, so git creates src/secguard automatically
+SRC_DIR = REPO_ROOT / "src"
+SECGUARD_DIR = SRC_DIR / "secguard"
 SECGUARD_REPO = "https://github.com/adysinghh/secguard.git"
 
 
@@ -47,11 +48,11 @@ def install_requirements() -> None:
 
 
 def ensure_secguard_repo() -> None:
-    SECGUARD_DIR.parent.mkdir(parents=True, exist_ok=True)
+    SRC_DIR.mkdir(parents=True, exist_ok=True)
 
     if not SECGUARD_DIR.exists():
-        print(f"[bootstrap] cloning secguard into {SECGUARD_DIR}")
-        code = run(["git", "clone", SECGUARD_REPO, str(SECGUARD_DIR)], cwd=REPO_ROOT)
+        print(f"[bootstrap] cloning secguard into {SRC_DIR} (repo will become {SECGUARD_DIR})")
+        code = run(["git", "clone", SECGUARD_REPO], cwd=SRC_DIR)
         if code != 0:
             raise RuntimeError(f"git clone secguard failed (exit_code={code})")
     else:
@@ -79,7 +80,7 @@ def main() -> None:
 
     print("\n[bootstrap] local LLM mode ✅ (skipping HF picker entirely)")
     print("[bootstrap] req.txt installed ✅")
-    print("[bootstrap] secguard installed from src/secguard_repo ✅")
+    print("[bootstrap] secguard installed from src/secguard ✅")
     print("[bootstrap] done ✅")
 
 
